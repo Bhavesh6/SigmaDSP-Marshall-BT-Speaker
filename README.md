@@ -1,11 +1,11 @@
 # SigmaDSP-Marshall-BT-Speaker
 
-> **A fully engineered DIY portable Bluetooth speaker built from raw chips — ADAU1701 SigmaDSP, ESP32-WROVER with LDAC and lossless WiFi/microSD sources, 4-channel Class-D amplification, active crossover, and live tuning from a phone.**
+> **A fully engineered DIY portable WiFi and Bluetooth speaker built from raw chips — ADAU1701 SigmaDSP, ESP32-WROVER, lossless AirPlay and microSD playback, Spotify Connect, 4-channel Class-D amplification, active crossover, and live tuning from a phone.**
 
 [![Status](https://img.shields.io/badge/Status-V4%20Architecture%20Locked-yellow?style=for-the-badge)]()
 [![Hardware](https://img.shields.io/badge/Hardware-Not%20Started-red?style=for-the-badge)]()
 [![DSP](https://img.shields.io/badge/DSP-ADAU1701%20SigmaDSP-blue?style=for-the-badge)]()
-[![BT](https://img.shields.io/badge/Bluetooth-LDAC%20%7C%20aptX%20%7C%20AAC%20%7C%20SBC-green?style=for-the-badge)]()
+[![Streaming](https://img.shields.io/badge/Streaming-AirPlay%20%7C%20Spotify%20Connect%20%7C%20Bluetooth-green?style=for-the-badge)]()
 [![MCU](https://img.shields.io/badge/MCU-ESP32--WROVER--IE-orange?style=for-the-badge)]()
 [![License](https://img.shields.io/badge/License-MIT-lightgrey?style=for-the-badge)]()
 
@@ -17,7 +17,8 @@
 V1 — Initial Concept                        COMPLETE
 V2 — Architecture + Gap Analysis R1         COMPLETE
 V3 — Deep Research + All New Challenges     COMPLETE   (archived: docs/README_v3.md)
-V4 — Architecture Locked Against Rev. C     COMPLETE   <-- this document
+V4 — Architecture Locked Against Rev. C     COMPLETE
+V4.1 — WiFi-First Sources, Stack Chosen     COMPLETE   <-- this document
 V5 — Firmware Planning                      NEXT
 --- HARDWARE NOT STARTED ---
 Stage 0  SigmaStudio program, no hardware   IN PROGRESS
@@ -65,8 +66,9 @@ Plus five things V3 never mentioned at all: **PVDD/PGND**, the **PLL loop filter
 ```
   Phone / PC / NAS
         |
-        +-- Classic BT A2DP (LDAC / aptX HD / aptX / aptX-LL / AAC / SBC)
-        +-- WiFi: AirPlay (ALAC) / Squeezelite (FLAC) / DLNA      <- LOSSLESS
+        +-- WiFi: AirPlay (ALAC) / Squeezelite (FLAC) / DLNA      <- PRIMARY, LOSSLESS
+        +-- WiFi: Spotify Connect  (speaker fetches its own stream)
+        +-- Classic BT A2DP (SBC / AAC)  <- fallback, any app, any phone
         +-- BLE GATT  (app control, runs alongside any ONE audio source)
         |
    [ESP32-WROVER-IE-N16R8]  external IPEX antenna
@@ -468,8 +470,10 @@ FINAL:      ESP32-WROVER-IE-N16R8
 PROTOTYPE:  7Semi ESP32-DevKitC WROVER (16 MB / 8 MB / IPEX)
             USB, CP2102N, BOOT/EN buttons, 2.54 mm headers, breadboardable
 
-RIGHT NOW:  any ESP32 already on the bench is fine for Stages 1-6.
-            PSRAM is only needed once LDAC decoding starts.
+RIGHT NOW:  any ESP32 already on the bench is fine for Stages 1-6,
+            which only exercise I2C, I2S and the DSP.
+            PSRAM becomes mandatory at Stage 8 -- squeezelite-esp32
+            will not run without it.
 
 NEVER:      any WROOM (no PSRAM), any R2 variant (EOL, 2 MB),
             any S3/C3/C6 (no Classic Bluetooth)
@@ -477,7 +481,7 @@ NEVER:      any WROOM (no PSRAM), any R2 variant (EOL, 2 MB),
 
 **Why the external antenna is not optional polish:** the module sits inside a sealed MDF box with four neodymium driver magnets, metal PR frames, cells, and Class-D amps switching at 400 kHz. A PCB antenna in that environment will drop WiFi audio. Route a U.FL pigtail to a rear-panel SMA antenna (₹140 total), away from magnets and switching nodes.
 
-**PSRAM reality check:** the ESP32 can only map 4 MB of external RAM into its address space; the upper 4 MB of an R8 module needs the `himem` API. Internal DRAM is the scarce resource, not PSRAM — Classic BT alone takes ~100 KB. Rough live-stack budget: **BLE ~50 KB, Classic BT ~100 KB, WiFi ~70 KB — do not hold all three.** Use the PSRAM branch of the A2DP firmware so audio buffers live in PSRAM.
+**PSRAM reality check:** the ESP32 can only map 4 MB of external RAM into its address space; the upper 4 MB of an R8 module needs the `himem` API. Internal DRAM is the scarce resource, not PSRAM — Classic BT alone takes ~100 KB. Rough live-stack budget: **BLE ~50 KB, Classic BT ~100 KB, WiFi ~70 KB — do not hold all three.** Keep audio buffers in PSRAM; squeezelite-esp32 requires at least 4 MB of it.
 
 **Buying warning for India:** insist on the full part number printed on the shield — `ESP32-WROVER-IE-N16R8`. Boards sold as "4 MB" have been found containing 2 MB flash, which produces cryptic partition errors.
 
@@ -499,30 +503,74 @@ If Stage 9 testing does show A2DP + BLE stuttering, the fix is a PB-03 on UART (
 
 ---
 
-## 8. Source Architecture — Lossless Added
+## 8. Source Architecture — WiFi First, Bluetooth as Fallback
 
 No Bluetooth codec is lossless, LDAC included (990 kbps vs 1411 kbps for CD). If lossless matters, it has to arrive by another path — and the WROVER already has the hardware for three of them.
+
+There are two fundamentally different ways a network speaker gets its audio, and they feel different to use:
+
+```
+PHONE STREAMS     AirPlay, Bluetooth
+                  pick the speaker, EVERY app works, phone must stay in range,
+                  music stops if the phone dies
+
+SPEAKER FETCHES   Spotify Connect, Chromecast
+                  phone is only a remote -- it can leave, music continues,
+                  but only apps that implement the protocol
+```
+
+Both are wanted, and the plan below provides one of each.
 
 | Rank | Path | Rate | Lossless | Extra hardware |
 |---|---|---|---|---|
 | 1 | microSD FLAC/WAV | 1411 kbps | Yes | microSD module ₹80 + card |
 | 2 | WiFi AirPlay (ALAC) / Squeezelite (FLAC) / DLNA | 1411 kbps | Yes | none |
 | 3 | AUX 3.5 mm into the ADAU1701 ADCs | analog | Yes* | ~₹20 passives |
-| 4 | Bluetooth LDAC | 990 kbps | No | none |
-| 5 | Bluetooth SBC | 328 kbps | No | none |
+| 4 | Spotify Connect — speaker fetches its own stream | 320 kbps Ogg | No | none, Premium required |
+| 5 | Bluetooth SBC / AAC | 328 kbps | No | none |
+| — | Bluetooth LDAC | 990 kbps | No | **dropped — see the firmware decision below** |
 
 \* no digital compression; quality depends on the source device's DAC.
 
 **microSD playback is both the best quality and the longest runtime** — the radio is off entirely.
 
-### The firmware fork in the road
+### Chromecast — researched and closed
+
+Recorded so it is not researched again. **Google Cast cannot be implemented on this hardware, and nobody has done it on any microcontroller.** Two independent blockers: a Cast sender verifies a device certificate signed by Google and burned in at manufacture under a licensing agreement, and a Cast receiver app is a web app needing an embedded Chromium on a Linux-class SoC.
+
+What a GitHub sweep actually turns up:
+
+- Every ESP32/ESP8266 Cast project (`amitn/ESPCaster`, `amitn/knobcaster`, `doccaz/knobcast`, `Project-Bilal/micro-bilal`) is a **controller** that commands a real Chromecast. Not one is a cast target.
+- Everything called a "cast receiver" (`DeMille/url-cast-receiver`, `Stremio/stremio-chromecast-receiver`, JW Player's) is a **receiver web app** registered in Google's Cast Developer Console that runs *on* real Chromecast hardware. Same word, different thing — this is why the problem looks solved when you search and isn't.
+- Device emulators exist only on Node/Go (`vbaicu/mMusicCast` 178★, `tristanpenman/go-cast`, `jondot/castbox`, `geekgonecrazy/NodeCast`). None is maintained; mMusicCast's own README declares it discontinued, last commit September 2022.
+- **And they are not Cast.** mMusicCast's dependencies are `peer-ssdp` + `ws` — SSDP/DIAL discovery plus YouTube's Lounge WebSocket API. No `castv2`, no TLS device auth. It works because *YouTube specifically* still honours the older open DIAL path, not because anyone cracked Cast. Its Spotify support shells out to **librespot** — i.e. Spotify Connect, the same protocol chosen below.
+
+If Cast is ever genuinely needed: put a Cast-certified device (a used Chromecast Audio, or a Linkplay-based streamer that lists "Chromecast built-in" — verify on the product page, most ship AirPlay and Spotify Connect only) into the **AUX jack**. It still gets the full EQ and crossover because it enters through the ADAU1701's own ADCs.
+
+### Firmware stack — DECIDED: squeezelite-esp32
 
 The two candidate stacks **cannot be merged into one binary**:
 
 - **WillyBilly06 `ESP32-A2DP-SINK-WITH-CODECS-UPDATED`** — ESP-IDF 5.5.2, patched Bluetooth stack, LDAC / aptX HD / aptX / aptX-LL / Opus / AAC / SBC, LDAC to 96 kHz/24-bit. Has a PSRAM branch (WROVER) and an internal-SRAM branch (WROOM). Bundles BLE GATT, DSP, level meters and WS2812B effects — closest to this project's feature set. Needs modifying to force fixed 48 kHz I2S master output. *(The older `esp32-a2dp-sink-with-LDAC-APTX-AAC` repo is superseded — its own README points here.)*
 - **sle118/squeezelite-esp32** — AirPlay, Squeezelite/LMS, Spotify Connect, BT sink, multi-room, display and encoder support. But it *is* the firmware, with one active mode at a time, and its own foreword warns that everything other than LMS playback is "stitched on".
 
-**V5 must pick one as the primary stack.** Current lean: WillyBilly06 for Bluetooth-first with SD playback added via `schreibfaul1/ESP32-audioI2S`, which conveniently **always outputs 48 kHz regardless of source** — exactly what a fixed-rate ADAU1701 needs. AirPlay would then be the feature deferred, or handled by a later firmware swap. (`rbouteiller/airplay-esp32` is a newer AirPlay-2 option but is oriented at the TAS5825M.)
+**squeezelite-esp32 wins, because it is the only stack that covers every listener.** AirPlay serves iPhone users from any app; Spotify Connect serves everyone on either platform; its basic Bluetooth sink catches anything neither reaches. One binary, no compromise on who can play music on it.
+
+```
+WHAT THIS BUYS          AirPlay (lossless, any iOS app)
+                        Spotify Connect (both platforms, phone can leave)
+                        LMS / multi-room / FLAC / internet radio
+                        Bluetooth SBC+AAC as the universal fallback
+
+WHAT THIS COSTS         LDAC
+```
+
+Giving up LDAC is a deliberate trade, not a regret. It was always the least significant link in the chain — below the enclosure, the drivers, the crossover and the amplifier — and it is being replaced by genuinely lossless WiFi, not by something worse. It also sidesteps the A2DP-versus-WiFi coexistence problem entirely, because the WiFi path *is* the primary path.
+
+Two knock-on effects:
+
+- **The module choice does not change.** squeezelite-esp32 needs at least 4 MB flash and 4 MB PSRAM, so the WROVER-IE-N16R8 is still correct — now chosen for PSRAM and the external antenna rather than for LDAC. The external antenna matters *more* now, since WiFi audio is the main path and it is running inside a sealed box full of magnets.
+- **Dropping Classic Bluetooth entirely would open the ESP32-S3** (8 MB addressable PSRAM, faster core, and the only ESP32 that can run on-device wake word later). Not recommended — Bluetooth costs nothing already planned for and is the guest path — but the door is no longer locked.
 
 Practical file-format note: 16/44.1 FLAC decodes comfortably on the ESP32; 24/96 is at the edge and stutters. Target 16–24 bit, 44.1–48 kHz files.
 
@@ -934,9 +982,10 @@ After the first SigmaStudio compile, run **MCUdude's `DSP_parameter_generator`**
 | `freedsp.github.io` | Open ADAU1701 hardware, I2C and I2S getting-started guides, hand-soldering video for the QFP package |
 | `MCUdude/SigmaDSP` | Arduino I2C library, safeload wrapper, DSP_parameter_generator |
 | `Wei1234c/SigmaDSP` | Python control from PC or ESP32 — bench tool, not the shipping path |
-| `WillyBilly06/ESP32-A2DP-SINK-WITH-CODECS-UPDATED` | **Current** LDAC / aptX HD / aptX / aptX-LL / Opus / AAC / SBC sink, ESP-IDF 5.5.2, PSRAM branch + BLE GATT + LED effects |
+| `sle118/squeezelite-esp32` | **CHOSEN STACK** — AirPlay, Spotify Connect, Squeezelite/LMS, multi-room, BT sink, display, encoder |
+| `WillyBilly06/ESP32-A2DP-SINK-WITH-CODECS-UPDATED` | The LDAC route not taken. LDAC / aptX HD / aptX / aptX-LL / Opus / AAC / SBC, ESP-IDF 5.5.2, PSRAM branch + BLE GATT + LED effects. Keep in view if the WiFi path disappoints |
 | `WillyBilly06/esp32-a2dp-sink-with-LDAC-APTX-AAC` | Superseded — its README points to the repo above |
-| `sle118/squeezelite-esp32` | AirPlay, Squeezelite/LMS, Spotify Connect, multi-room, display, encoder |
+| `feelfreelinux/cspot` | Standalone Spotify Connect for ESP32, if squeezelite's implementation proves awkward |
 | `schreibfaul1/ESP32-audioI2S` | SD/web FLAC, WAV, MP3 — always outputs 48 kHz |
 | `pschatzmann/ESP32-A2DP` | Simplest reliable A2DP sink (SBC/AAC/aptX), good fallback |
 | `rbouteiller/airplay-esp32` | AirPlay 2 on ESP32 — oriented at TAS5825M, worth watching |
@@ -1156,13 +1205,14 @@ Practice on a scrap QFP first -- that is what the third adapter is for.
 
 ## 23. Still Open for V5
 
-1. **Primary firmware stack** — WillyBilly06's codec sink (Bluetooth-first, LDAC) or squeezelite-esp32 (WiFi-first, AirPlay). They cannot be merged. Current lean: WillyBilly06 + ESP32-audioI2S for SD, AirPlay deferred.
-2. **Source-switching state machine** — WiFi and Classic BT share one radio, so the firmware must cleanly tear one down before starting the other, while keeping the I2S clock running the whole time (including AUX mode).
-3. **Single vs dual MCU** — decided provisionally as single, confirmed at Stage 9 by streaming A2DP while pushing continuous BLE GATT writes. Fallback: PB-03 on UART, four spare pads reserved.
-4. **Enclosure alignment** — PR at ~60 Hz vs sealed. Build for both, decide by measurement.
-5. **Passive radiator mass** — cannot be calculated to a final value. Model in WinISD with the real PR's parameters, buy after the drivers are measured, then iterate with washers.
-6. **BLE GATT map** — the 25-characteristic design in `docs/README_v3.md` stands, but needs the new parameters folded in (HPF corner, alignment mode, source select, limiter thresholds).
-7. **4S divider ratios** — the cell-monitoring dividers in V3 were sized for 3S and must be re-scaled; the MAX17043 is single-cell only.
+1. **Source-switching state machine** — WiFi and Classic BT share one radio, so the firmware must cleanly tear one down before starting the other, while keeping the I2S clock running the whole time (including AUX mode).
+2. **Single vs dual MCU** — decided provisionally as single, confirmed at Stage 9 by streaming audio while pushing continuous BLE GATT writes. Fallback: PB-03 on UART, four spare pads reserved.
+3. **Enclosure alignment** — PR at ~60 Hz vs sealed. Build for both, decide by measurement.
+4. **Passive radiator mass** — cannot be calculated to a final value. Model in WinISD with the real PR's parameters, buy after the drivers are measured, then iterate with washers.
+5. **BLE GATT map** — the 25-characteristic design in `docs/README_v3.md` stands, but needs the new parameters folded in (HPF corner, alignment mode, source select, limiter thresholds). Check what squeezelite-esp32 already exposes before writing a custom service.
+6. **4S divider ratios** — the cell-monitoring dividers in V3 were sized for 3S and must be re-scaled; the MAX17043 is single-cell only.
+
+*Closed since V4 was first written: the primary firmware stack (§8 — squeezelite-esp32) and Chromecast support (§8 — not possible, do not revisit).*
 
 ---
 
@@ -1204,4 +1254,4 @@ Ghost
 
 *Marshall-level sound from raw chips. Not because it is easy — because it is the right way to build it.*
 
-**V4 — architecture locked against Rev. C and the pre-build research report. Phase 1 parts on order. Hardware next.**
+**V4.1 — architecture locked against Rev. C and the pre-build research report; sources are WiFi-first and the firmware stack is chosen. Phase 1 parts on order. Hardware next.**
