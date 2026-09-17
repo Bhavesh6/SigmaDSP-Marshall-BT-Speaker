@@ -1,12 +1,12 @@
-# 🎸 SigmaDSP-Marshall-BT-Speaker
+# SigmaDSP-Marshall-BT-Speaker
 
-> **A fully engineered DIY portable Bluetooth speaker built from raw chips — targeting Marshall Middleton acoustic performance using ADAU1701 SigmaDSP, ESP32-WROVER with LDAC, 4-channel Class-D amplification, and a precision-tuned acoustic enclosure.**
+> **A fully engineered DIY portable Bluetooth speaker built from raw chips — ADAU1701 SigmaDSP, ESP32-WROVER with LDAC and lossless WiFi/microSD sources, 4-channel Class-D amplification, active crossover, and live tuning from a phone.**
 
-[![Status](https://img.shields.io/badge/Status-V3%20Deep%20Research%20Complete-yellow?style=for-the-badge)]()
+[![Status](https://img.shields.io/badge/Status-V4%20Architecture%20Locked-yellow?style=for-the-badge)]()
 [![Hardware](https://img.shields.io/badge/Hardware-Not%20Started-red?style=for-the-badge)]()
 [![DSP](https://img.shields.io/badge/DSP-ADAU1701%20SigmaDSP-blue?style=for-the-badge)]()
 [![BT](https://img.shields.io/badge/Bluetooth-LDAC%20%7C%20aptX%20%7C%20AAC%20%7C%20SBC-green?style=for-the-badge)]()
-[![MCU](https://img.shields.io/badge/MCU-ESP32--WROVER-orange?style=for-the-badge)]()
+[![MCU](https://img.shields.io/badge/MCU-ESP32--WROVER--IE-orange?style=for-the-badge)]()
 [![License](https://img.shields.io/badge/License-MIT-lightgrey?style=for-the-badge)]()
 
 ---
@@ -16,921 +16,1192 @@
 ```
 V1 — Initial Concept                        COMPLETE
 V2 — Architecture + Gap Analysis R1         COMPLETE
-V3 — Deep Research + All New Challenges     COMPLETE
-V4 — Controller Architecture Decision      IN PROGRESS (zero PCB testing needed)
-V5 — Firmware Planning (Both MCUs)         IN PROGRESS
+V3 — Deep Research + All New Challenges     COMPLETE   (archived: docs/README_v3.md)
+V4 — Architecture Locked Against Rev. C     COMPLETE   <-- this document
+V5 — Firmware Planning                      NEXT
 --- HARDWARE NOT STARTED ---
-Testing Phase 1 — Zero PCB Prototyping     NOT STARTED
-Testing Phase 2 — Individual Module Test   NOT STARTED
-Final Phase   — All-in-One Custom PCB      NOT STARTED
-Acoustic Phase — Enclosure + Tuning        NOT STARTED
-App Development                            NOT STARTED
+Stage 0  SigmaStudio program, no hardware   IN PROGRESS
+Stage 1  Power rails verified               NOT STARTED
+Stage 2  ADAU1701 alive standalone          NOT STARTED
+Stage 3  SigmaStudio over WiFi (TCPi)       NOT STARTED
+Stage 4  Tone out of VOUT0                  NOT STARTED
+Stage 5  EEPROM self-boot                   NOT STARTED
+Stage 6  ESP32 I2S clock + real audio       NOT STARTED
+Final    All-in-one custom PCB              NOT STARTED
+Acoustic Enclosure + tuning                 NOT STARTED
+App      BLE GATT control                   NOT STARTED
 ```
 
 > This repository is the complete living design document of every decision made, every problem found, and every solution planned — before a single component is soldered. Hardware will be committed here as it is built and tested.
 
----
+**Supporting documents**
 
-## How This Project Evolved — V1 to V3
-
-### V1 — The Naive First Approach
-
-What we thought we were building:
-```
-Phone -> Bluetooth -> ESP32 -> I2S -> ADAU1701 -> DAC -> Amp -> Speaker
-```
-
-What we got wrong:
-- I2S clock direction backwards (ESP32 master → ADAU1701 slave) — would cause complete silence
-- Missing 12.288MHz crystal oscillator — DSP literally cannot start without it
-- No Thiele-Small analysis — "3 inch 4Ω 15W" is meaningless without T/S parameters
-- Thought True Stereophonic was DSP widening — it is physical driver placement
-- Generic EQ curve — does not sound like Marshall at all
-- No PCB grounding plan — Class-D amp + 24-bit DSP on shared trace = noise
-- Assumed one ESP32 handles everything without analyzing memory usage
-- No battery cell-level monitoring plan
-- I2S DAC module in signal path — ADAU1701 has 4 built-in DACs, DAC module is redundant
-
-V1 was a list of components, not an engineering design.
+| File | What it holds |
+|---|---|
+| `docs/pre-build-research-report.md` | The final pre-build research report. Primary source for V4 — ADI quotes, the Elektor board confirmation, instruction budgets, amp measurements, verified pitfalls, and the confidence caveats on every claim |
+| `docs/README_v3.md` | V1–V3 history, BLE GATT app design, cell-monitoring circuit, full REW measurement protocol |
 
 ---
 
-### V2 — Architecture Defined, First Round of Mistakes Corrected
+## What V4 Changed
 
-Fixed issues:
-- I2S corrected: ADAU1701 is master (generates BCLK + LRCLK from crystal)
-  MP10/MP11 loopback traces to MP5/MP4 on PCB
-  ESP32 configured as I2S slave
-- 12.288MHz crystal oscillator added to BOM
-- 48kHz sample rate lock — WillyBilly06 firmware must resample all BT audio to 48kHz
-- True Stereophonic = physical diagonal tweeter placement (confirmed by Middleton teardown)
-- PCB 2-layer ground plane strategy defined (AGND / DGND zones, star point)
-- Zobel networks added to amp outputs (8.2Ω + 100nF per channel)
-- Input filter added DAC to amp (100Ω + 10nF)
-- Pop prevention RC circuit added (10MΩ + 47µF on amp MUTE pin)
-- Marshall EQ curve corrected (50Hz sub-bass, 2.5kHz presence, mud cut at 250Hz)
-- Baffle step correction identified (+4dB low-shelf around 1kHz)
-- MAX17043 fuel gauge added to BOM
+V4 is not a refinement of V3. Working from the **Rev. C datasheet** instead of the 2006 preliminary, and from documented ESP32 I2S slave-mode failures, six things in V3 turned out to be wrong — two of them badly enough to destroy the chip or produce permanent silence.
 
-V2 was a correct architecture. But still missing the deep layers.
-
----
-
-### V3 — Everything We Now Know
-
-New discoveries in V3:
-
-1. ESP32 memory with LDAC + BLE simultaneously is critically tight
-2. Single MCU may not be enough — decision requires physical testing
-3. Individual cell voltage monitoring needs dedicated resistor divider circuit
-4. Battery runtime is much lower than expected at real listening volumes
-5. Testing strategy must be zero PCB first — not straight to custom PCB
-6. App design is far more complex — 25 BLE GATT characteristics needed
-7. Acoustic tuning is three layers (physical, correction, signature) not one
-8. DSP signal chain needs 11 blocks in specific order — not arbitrary
-9. Baffle step correction formula is enclosure-width dependent
-10. Passive radiator mass calculation needs actual T/S data — cannot guess
-
-This README documents V3.
-
----
-
-## Project Goal
-
-Build a DIY portable Bluetooth speaker that matches the Marshall Middleton in actual acoustic performance — not just appearance.
-
-### Why Marshall Level Is Hard for DIY
-
-The Middleton is expensive because:
-- Matched driver pairs (measured and selected)
-- Enclosure tuned per driver T/S parameters
-- Professional DSP tuning with hundreds of measurements + EQ corrections
-- 4-channel amp (woofer and tweeter driven independently)
-- Placement compensation that adjusts EQ with environment
-- SNR greater than 90dB (requires proper grounding and low-noise PSU)
-
-We do all of this from scratch, with raw chips, no reference design.
-
-### Our Advantage Over Real Middleton
-
-Because we use ADAU1701 (fully programmable hardware DSP) instead of Marshall's fixed DSP:
-
-| Feature | Marshall Middleton | Our DIY Build |
-|---|---|---|
-| DSP access | Locked — no user access | Every coefficient editable live |
-| EQ | App: bass + treble only | 10-band parametric, adjustable Q |
-| Crossover | Fixed factory setting | Adjustable LR4, any frequency |
-| Codec | LDAC + AAC + SBC (BT 5.3) | LDAC + aptX HD + aptX + AAC + SBC |
-| Placement compensation | Fixed algorithm | Programmable EQ preset switch |
-| Dynamic Loudness | Fixed | Fully programmable |
-| OTA | Marshall controls | Full user control |
-| Cost | Rs 21,000+ | Rs 5,900 – 6,700 |
-
----
-
-## The Big Challenge — Raw Chips, Real Engineering
-
-We are NOT using:
-- Pre-made ADAU1701 breakout module
-- Pre-made audio amplifier shield
-- Generic BT audio module
-- Pre-designed speaker crossover
-
-We ARE using:
-- Bare ADAU1701JSTZ-RL LQFP-48 (0.5mm pitch) on custom PCB
-- ESP32-WROVER-E bare module
-- Custom 2-layer PCB designed in EasyEDA
-- Acoustic enclosure designed from Thiele-Small parameters
-- Raw 18650 cells in 3S pack with custom cell monitoring
-
-Every layer — power supply, grounding, signal path, acoustic enclosure, firmware, DSP program — is our responsibility. Things that will go wrong on first try: LQFP-48 solder bridges, I2S slave mode instability, noise floor from grounding, passive radiator needing mass iteration, EQ needing multiple measurement rounds. This is why we test on zero PCBs first.
-
----
-
-## ESP32 Memory Reality Check
-
-### What LDAC Actually Consumes
-
-Classic Bluetooth alone uses roughly 80-100KB of internal DRAM. LDAC decoder buffers require PSRAM. Running Classic BT (A2DP audio) and BLE simultaneously causes significant additional heap loss of 40-50KB compared to using either alone.
-
-```
-ESP32-WROVER Internal DRAM: 520KB total
-
-Allocation:
-  Bluetooth controller (Classic BT):    ~80KB
-  Bluedroid host stack (A2DP):          ~60KB
-  LDAC decoder buffers:         → PSRAM (200KB+, explicit SPIRAM malloc)
-  BLE GATT stack (simultaneous):        ~30KB
-  FreeRTOS + task stacks:               ~40KB
-  I2S DMA buffers (MUST be internal):    ~8KB
-  Application code + variables:         ~20KB
-  LittleFS + NVS:                       ~10KB
-  Remaining internal DRAM:              ~70KB (tight — must be managed)
-  PSRAM (4MB):           LDAC buffers + audio queue (safe here)
-```
-
-ESP32-WROVER with 4MB PSRAM is mandatory — not optional.
-
-Key firmware rules:
-- LDAC decode buffers: `heap_caps_malloc(MALLOC_CAP_SPIRAM)` — put in PSRAM
-- I2S DMA buffers: `heap_caps_malloc(MALLOC_CAP_INTERNAL)` — must stay in internal DRAM
-- Monitor: `heap_caps_get_free_size(MALLOC_CAP_INTERNAL)` — alert if below 20KB
-
----
-
-## Single vs Dual Controller Decision
-
-### Option A — Single ESP32-WROVER
-
-```
-Core 0: Classic BT A2DP + LDAC decode + resample + I2S TX
-Core 1: BLE GATT + I2C DSP writes + encoders + LED + battery monitoring
-
-Pros: Simpler hardware, single firmware, lower cost
-Cons: Memory tight, BLE + audio may interfere, any crash kills all functions
-```
-
-### Option B — Dual MCU (ESP32-WROVER + STM32/ESP32-C3)
-
-```
-ESP32-WROVER: Audio ONLY (BT A2DP + LDAC + I2S TX)
-Secondary MCU: BLE GATT + I2C ADAU1701 + GPIO + LED + battery monitoring
-Inter-MCU: UART command protocol
-
-Pros: ESP32 has all memory for audio, independent failure domains, cleaner
-Cons: More complex hardware, two firmwares, inter-MCU protocol to design
-```
-
-### Decision Process
-
-We START with Option A on zero PCB testing.
-
-Zero PCB Stage 4 (BLE GATT + audio simultaneously) is the decision point:
-- If free internal DRAM stays above 20KB under full load → Option A confirmed, proceed to custom PCB
-- If free internal DRAM drops below 20KB → switch to Option B for final design
-
-The zero PCB stage will stress-test:
-- LDAC decoding while BLE GATT actively receives parameter updates
-- LED animation running with audio
-- I2C writes to ADAU1701 during streaming
-- Memory headroom monitoring under full simultaneous load
-
----
-
-## Battery Management — Cell-Level Monitoring
-
-### Why Standard BMS Is Not Enough
-
-The 3S BMS board we use provides overcharge protection, over-discharge protection, overcurrent protection, and passive cell balancing. What it does NOT provide: individual cell voltages over any digital bus, SOC percentage, temperature monitoring (on basic modules).
-
-### What the System Must Know
-
-```
-For accurate app battery display:
-  1. Total pack voltage (resistor divider on ESP32 ADC)
-  2. Individual cell voltages (dedicated divider circuit per cell tap)
-  3. State of Charge % (MAX17043 fuel gauge IC)
-  4. Charging status (BMS CHRG pin to GPIO)
-  5. Cell balance status (derived from cell voltage differences)
-  6. Pack temperature (NTC thermistor on ADC)
-```
-
-### 3S Individual Cell Voltage Circuit
-
-A fully charged 3S pack sits at 12.6V (4.2V per cell). The BMS monitors individual cells — if any single cell exceeds 4.25V, charging cuts off immediately.
-
-```
-3S pack cell tap points (from B- ground):
-  B-  = 0V
-  B1  = 0 to 4.2V  (Cell 1)
-  B2  = 0 to 8.4V  (Cell 1+2)
-  B+  = 0 to 12.6V (full pack)
-
-Voltage dividers (all resistors to B- reference, output to ESP32 ADC):
-  Cell 1: B- to B1: 100kΩ / 100kΩ divider → max 2.1V → GPIO34 (ADC1_CH6)
-  Cell 2: B- to B2: 200kΩ / 100kΩ divider → max 2.8V → GPIO35 (ADC1_CH7)
-  Pack:   B- to B+: 330kΩ / 100kΩ divider → max 2.93V → GPIO32 (ADC1_CH4)
-  NTC:    10kΩ NTC + 10kΩ divider → GPIO33 (ADC1_CH5)
-
-Software:
-  Cell 1 voltage = ADC34_reading × 2
-  Cell 2 alone   = ADC35_reading × 3 − Cell1_voltage
-  Cell 3 alone   = ADC32_reading × 4.3 − Cell1 − Cell2
-
-Important:
-  Use ADC averaging (32 samples) to reduce noise
-  Add 100nF cap across lower resistor of each divider
-  Use ADC1 only (ADC2 conflicts with BT/WiFi on ESP32)
-```
-
-### Cell Health Alerts
-
-```
-Healthy:  All cells within 50mV of each other → Green LED
-Drifting: Any cell differs by more than 100mV → Yellow LED + app warning
-Critical: Any cell below 3.0V or above 4.2V → Red LED + app alert + volume reduce
-Hot:      Pack temperature above 45°C → app warning + volume reduction
-Very hot: Above 55°C → hard mute + charge disable
-```
-
----
-
-## App Design — What We Can and Cannot Do
-
-### Full App Feature List
-
-```
-Audio Controls:
-  Master Volume slider (0–100%)
-  EQ Visualizer (10-band graphic, read from DSP)
-  Bass Shelf slider (±12dB)
-  Treble Shelf slider (±12dB)
-  Presence slider at 2.5kHz (±6dB)
-  EQ Presets: Marshall Rock / Flat / Bass Boost / Vocal / Open Space / Near Wall
-
-Status Display:
-  Battery bar (5-segment, SOC %)
-  Per-cell voltage readout (Cell 1 / Cell 2 / Cell 3)
-  Pack temperature (°C with color coding)
-  Charging status (Charging / Full / Discharging)
-  Active codec indicator (LDAC 990kbps / aptX HD / aptX / AAC / SBC + sample rate)
-  DSP connection status
-
-Advanced Controls:
-  Crossover frequency slider (1kHz – 5kHz, moves LR4 XO point)
-  Tweeter delay (0–1ms, time alignment fine-tune)
-  Dynamic Loudness toggle (ON / OFF)
-  Placement Compensation (Open Space / Near Wall)
-  Limiter threshold (-6 to 0 dBFS)
-  Save/Load preset (name + save to LittleFS)
-  Auto-off timer (0 / 10 / 30 / 60 minutes)
-
-System:
-  Firmware OTA (push new ESP32 firmware)
-  DSP Program OTA (push new .bin to 24LC256 EEPROM)
-  Factory reset
-  Device name customization
-```
-
-### BLE GATT Design (25 Characteristics)
-
-```
-Audio Service:
-  Volume (Write)
-  EQ Band 1–10 coefficients (Write × 10)
-  Active preset index (Read/Write)
-  Crossover frequency (Write)
-  Tweeter delay (Write)
-  Limiter threshold (Write)
-  Placement mode (Write)
-  Dynamic loudness (Write)
-
-Status Service (Notify):
-  Battery SOC % (Read + Notify)
-  Cell 1/2/3 voltages (Read + Notify)
-  Pack temperature (Read + Notify)
-  Charging status (Read + Notify)
-  Active codec string (Read + Notify)
-  DSP connection (Read + Notify)
-
-System Service:
-  OTA firmware trigger (Write)
-  OTA DSP program (Write, long)
-  Factory reset (Write)
-  Device name (Read/Write)
-  Auto-off timer (Read/Write)
-```
-
-### Real-Time EQ Update Latency
-
-```
-User drags EQ slider → BLE write (10–50ms) → ESP32 receives
-→ I2C write to ADAU1701 Parameter RAM (~1ms)
-→ ADAU1701 applies coefficient on next audio frame (<1ms)
-Total: ~11–51ms — acceptable for live EQ control
-```
-
----
-
-## Acoustic Engineering — The Hard Part
-
-### Why This Is the Most Underestimated Section
-
-DSP and firmware follow documented procedures. Acoustics is where guessing costs the most time. A speaker with wrong enclosure volume or untuned passive radiator cannot be fixed by DSP alone. EQ cannot add bass extension below the enclosure's tuning frequency, fix passive radiator over-excursion distortion, or correct tweeter-woofer phase misalignment at crossover. All acoustic problems must be solved in hardware first. DSP is the final 10%.
-
-### Three Layers of Tuning
-
-```
-Layer 1: Physical (hardware — cannot change after build)
-  Driver selection (Fs, Qts, Xmax from T/S parameters)
-  Enclosure volume calculated from T/S
-  Passive radiator mass tuned to target frequency
-  Driver placement and angle (True Stereophonic = physical)
-
-Layer 2: Acoustic Correction (DSP — fixes hardware imperfections)
-  Baffle step correction (+4dB low-shelf at ~1kHz)
-  Room resonance notch filters (from REW measurement)
-  Driver frequency response correction (from measurement)
-  Tweeter level matching to woofer sensitivity
-  Tweeter time alignment delay (from REW step response)
-
-Layer 3: Sound Signature (DSP — adds Marshall character)
-  Marshall EQ curve (sub-bass, presence, treble — see below)
-  Dynamic loudness (Fletcher-Munson at low volumes)
-  Placement compensation (open vs wall preset)
-  Limiter / compressor
-
-DO LAYER 2 BEFORE LAYER 3.
-Get flat response first, then add character on top.
-```
-
-### Driver Selection Rules — Mandatory
-
-You cannot choose a driver without these T/S parameters published:
-
-| Parameter | Symbol | Target for Our Build |
-|---|---|---|
-| Resonant frequency | Fs | Below 120Hz for woofer |
-| Total Q | Qts | 0.4 – 0.6 (passive radiator sweet spot) |
-| Compliance volume | Vas | 1–3L (determines box volume) |
-| Sensitivity | dB/W/m | Above 84dB |
-| Max excursion | Xmax | Above 3mm |
-
-If the seller does not publish T/S parameters, skip that driver.
-
-### Enclosure Volume Calculation
-
-```
-Using Dayton CE90-4 as target driver (Fs=115Hz, Qts=0.56, Vas=1.2L):
-
-QB3 alignment box volume per driver:
-  Vb = Vas × (Qts / 0.38)^2.87 = 1.2 × (0.56/0.38)^2.87 = approx 3.1L total
-  Per driver: 1.55L
-
-Enclosure gross dimensions target: 250 × 110 × 120mm
-Internal after 12mm MDF walls: 226 × 86 × 96mm = 1.87L per side
-After internal displacement (battery, PCB, drivers, damping): ~1.55L net per woofer
-
-This matches the calculation. Enclosure size is confirmed.
-```
-
-### Passive Radiator Tuning Formula
-
-```
-Tuning frequency formula:
-  fp = Fs_woofer × sqrt(Mms / Mmd)
-
-Where:
-  Fs = woofer free-air resonance (from T/S data)
-  Mms = woofer moving mass (from T/S data, typically 8–12g for 3" driver)
-  Mmd = passive radiator moving mass (add weights to tune)
-
-Target fp: 55–65Hz
-
-Example (Fs=115Hz, Mms=9g, target fp=58Hz):
-  Mmd = Mms × (Fs/fp)^2 = 9 × (115/58)^2 = 35.4g
-
-Physical implementation:
-  Stick metal washers or fishing sinkers to PR cone center
-  Start light, measure with REW, add mass until fp reaches 60Hz
-  Each gram shifts fp down slightly
-  This requires iteration — cannot be calculated to exact final value without measurement
-```
-
-### Internal Damping Rules
-
-```
-Use: 25mm open-cell polyurethane acoustic foam on all walls EXCEPT
-  - Passive radiator mounting area (must breathe freely)
-  - Woofer front baffle area (behind cone)
-
-Use: Loosely stuffed polyester fill in remaining volume (~40% fill)
-  Effect: Effectively increases Vas by 15–25%, lowers tuning slightly, removes box resonances
-
-Do NOT:
-  Overstuff (raises tuning frequency, reduces PR efficiency)
-  Use closed-cell foam (reflects instead of absorbs)
-  Block passive radiator cavities with any material
-```
-
-### Baffle Step Correction
-
-```
-Physical effect: High frequencies radiate into 180° half-space,
-low frequencies into 360° full space → 6dB bass drop above transition frequency.
-
-Transition frequency = 115 / baffle_width_metres
-For 110mm baffle: fc = 115 / 0.11 = 1045Hz
-
-DSP correction in ADAU1701:
-  Type: Low-shelf boost
-  Frequency: ~1kHz (adjust from actual measurement)
-  Gain: +4dB
-  This is in Layer 2 (acoustic correction), NOT in Marshall EQ (Layer 3)
-```
-
-### Acoustic Measurement Plan
-
-Required equipment:
-- UMIK-1 calibrated USB microphone (~Rs 5,000) or calibrated phone mic
-- REW (Room EQ Wizard, free software)
-- Outdoor or large room for measurement (minimize reflections)
-
-Measurements to take and what to do with them:
-
-```
-1. Individual woofer response (L and R, separately, near-field at 15cm)
-   → Identifies Fs peak, rolloff, cone breakup modes
-   → Used to design notch filters in Layer 2 EQ
-
-2. Individual tweeter response
-   → Finds rolloff point, sensitivity vs woofer
-   → Used to set tweeter level trim in ADAU1701
-
-3. Combined response (both woofer + tweeter, in-box)
-   → Check crossover region 2–4kHz for peaks, dips, phase errors
-   → If dip at XO: adjust XO frequency or tweak filter Q
-   → If peak at XO: slight adjustment to filter type or level
-
-4. Bass extension (woofer + passive radiator in sealed box)
-   → Confirm tuning peak near 60Hz
-   → If too high: add mass to passive radiators
-   → If too low: remove mass from passive radiators
-   → Target: -10dB point at or below 60Hz
-
-5. Step response (time domain in REW)
-   → Shows whether tweeter and woofer arrive at mic simultaneously
-   → If tweeter leads: add delay to tweeter path in ADAU1701 (Block 10)
-   → Typical correction: 0.1–0.3ms
-
-6. THD measurement at 75dB SPL at 1m
-   → Target below 1% at all frequencies except near Fs
-   → High THD at high volume = over-excursion → reduce volume or adjust limiter
-
-7. Max SPL sweep
-   → Find where distortion rises sharply → set limiter threshold there
-```
-
----
-
-## DSP Tuning — Complete ADAU1701 Signal Chain
-
-### All 11 Processing Blocks in Order
-
-```
-I2S INPUT (L+R, 48kHz, 24-bit, from ESP32 I2S slave)
-    |
-[BLOCK 1] Input Volume Control
-  Parameter: VOLUME_ADDR
-  Range: -80dB to +6dB, live via ESP32 I2C
-
-[BLOCK 2] Dynamic Loudness (Fletcher-Munson compensation)
-  SigmaStudio: Dynamics → Loudness block
-  Low volumes (<40% output): +5dB @ 50Hz, +3dB @ 12kHz
-  High volumes: curves flatten automatically
-  Prevents thin sound at low volume
-
-[BLOCK 3] Acoustic Correction EQ (from REW measurement — fill in after build)
-  These values cannot be set now.
-  After measurement: load REW inverse filter here.
-  Removes driver peaks, dips, resonances — makes response flat.
-
-[BLOCK 4] Baffle Step Correction
-  Type: Low-shelf boost
-  Frequency: ~1kHz (from actual baffle width calculation)
-  Gain: +4dB, Q: 0.7
-
-[BLOCK 5] Marshall Sound Signature EQ (Layer 3 — character)
-  Applied on top of flat baseline from Blocks 3+4:
-  50Hz   Peak  +4.0dB  Q=0.7  Sub-bass punch (leather bass hit)
-  120Hz  Peak  +1.5dB  Q=1.0  Bass body and weight
-  250Hz  Peak  -1.0dB  Q=1.5  Mud cut (keeps mids clean)
-  500Hz  Peak  -0.5dB  Q=1.0  Low-mid clarity
-  800Hz  Peak  +0.5dB  Q=2.0  Guitar fundamental
-  1.5kHz Peak  +1.0dB  Q=1.5  Vocal and instrument presence
-  2.5kHz Peak  +2.5dB  Q=1.2  Marshall presence peak (key signature)
-  5kHz   Peak  +1.5dB  Q=1.5  Air and transient detail
-  10kHz  Shelf +2.0dB         Treble sparkle
-  14kHz  Peak  +1.0dB  Q=0.8  High-end extension
-
-[BLOCK 6] Placement Compensation (switchable via GPIO or app)
-  Open Space: corrections as above
-  Near Wall:  Add low-shelf cut: -3dB @ 80Hz (room bass buildup)
-  Switch via: ADAU1701 MP13 GPIO input triggered from app or button
-
-[BLOCK 7] Stereo Width (M-S based, subtle, optional)
-  Mid-Side matrix → slight side boost → convert back to L/R
-  Complements physical diagonal tweeter placement
-  Depth: 0% (off) to 20% (subtle) — adjustable from app
-
-[BLOCK 8] Soft Limiter + Compressor
-  Compressor: Threshold -12dBFS, Ratio 2:1, Attack 10ms, Release 200ms
-  Limiter: Threshold -3dBFS, Ratio inf:1, Attack 0.5ms, Release 100ms
-  Soft knee on both — prevents harsh clipping character
-
-[BLOCK 9] Linkwitz-Riley 4th Order Crossover at 2.8kHz
-  Woofer path:  Low-pass LR4 at 2.8kHz
-  Tweeter path: High-pass LR4 at 2.8kHz
-  LR4 = sums flat, correct polarity, -24dB/octave
-
-[BLOCK 10] Tweeter Time Alignment Delay
-  Delay on tweeter path: 0–0.3ms
-  Set from REW step response measurement after assembly
-
-[BLOCK 11] Output Mute (pop prevention)
-  MP12 GPIO: LOW during boot → all outputs muted
-  After self-boot complete (~200ms): MP12 → HIGH → amps enable
-
-DAC 0 (L) → [100Ω + 10nF filter] → TPA3116 Ch1 → Woofer L (front)
-DAC 1 (R) → [100Ω + 10nF filter] → TPA3116 Ch2 → Woofer R (front)
-DAC 2 (L) → [100Ω + 10nF filter] → TPA3110 Ch1 → Tweeter L (FRONT)
-DAC 3 (R) → [100Ω + 10nF filter] → TPA3110 Ch2 → Tweeter R (REAR diagonal)
-```
-
----
-
-## PCB Strategy — Zero PCB First, Custom PCB Second
-
-### Zero PCB Testing Stages
-
-Stage 1: ADAU1701 standalone
-- Build on perfboard: ADAU1701 + crystal + 24LC256 + 1.8V + 3.3V power
-- Flash via FX2LP + SigmaStudio — write simple tone generator program
-- Verify: DAC output on scope, SELFBOOT works on power cycle
-- Pass: move to Stage 2
-
-Stage 2: ESP32 I2S slave to ADAU1701
-- Add ESP32-WROVER to Stage 1 board
-- Flash minimal I2S slave test firmware (not WillyBilly06 yet)
-- ESP32 sends 1kHz test tone over I2S slave to ADAU1701
-- Verify: Clean audio output, stable clocks on scope
-- Tune: DMA buffer size, APLL settings until zero dropouts
-- Pass: move to Stage 3
-
-Stage 3: WillyBilly06 LDAC streaming
-- Flash full WillyBilly06 firmware
-- Connect phone via Bluetooth, stream music (LDAC if available)
-- Verify: Audio quality, no dropouts
-- Monitor: `heap_caps_get_free_size(MALLOC_CAP_INTERNAL)` under load
-- Decision: If free RAM below 20KB → dual MCU for final design
-- Pass: move to Stage 4
-
-Stage 4: BLE GATT + audio simultaneously
-- Add BLE GATT control alongside audio in firmware
-- Stream audio while sending BLE parameter writes continuously
-- Verify: No audio glitches during BLE activity
-- Test: Live EQ slider from app while music plays — dropout acceptable?
-- Pass: Single MCU confirmed → proceed to custom PCB
-
-Stage 5: Amplifier integration
-- Add TPA3116 + TPA3110 on separate perfboard sections
-- Wire ADAU1701 DAC outputs through input filters to amp inputs
-- Add Zobel networks on outputs, pop prevention RC
-- Test with any available speakers — check noise floor (should be silent with no audio)
-- Verify SNR: no hiss or hum at any volume setting
-
-Stage 6: Battery and monitoring
-- Build 3S 18650 pack with BMS
-- Wire cell voltage dividers to ESP32 ADC pins
-- Wire MAX17043 to I2C bus
-- Verify per-cell voltage readings, SOC % via BLE notification to phone
-- Test cell alert thresholds
-
-Only after all stages pass: design custom PCB.
-
----
-
-## Complete Pin Assignments
-
-### I2S (ADAU1701 Master, ESP32 Slave — Corrected)
-
-```
-ADAU1701 MP10 (OUTPUT_BCLK)  ────────────→ ESP32 GPIO26 (BCLK in, slave)
-ADAU1701 MP11 (OUTPUT_LRCLK) ────────────→ ESP32 GPIO25 (LRCLK in, slave)
-ADAU1701 MP0  (SDATA_IN0)    ←──────────── ESP32 GPIO22 (I2S DOUT)
-
-PCB loopback traces (not wires — PCB copper traces):
-ADAU1701 MP10 ──────────────────────────→ MP5 (INPUT_BCLK)
-ADAU1701 MP11 ──────────────────────────→ MP4 (INPUT_LRCLK)
-```
-
-### I2C Bus
-
-```
-ESP32 GPIO21 SDA ──┬── 4.7kΩ → 3.3V
-                   ├── ADAU1701 Pin 9 SDIO   addr 0x34
-                   ├── 24LC256 SDA           addr 0x50
-                   └── MAX17043 SDA          addr 0x36
-
-ESP32 GPIO22 SCL ──┬── 4.7kΩ → 3.3V
-                   ├── ADAU1701 Pin 8 SCLK
-                   ├── 24LC256 SCL
-                   └── MAX17043 SCL
-```
-
-### Battery ADC (All ADC1 — no conflict with BT/WiFi)
-
-```
-Cell 1 divider output (100k/100k)   → GPIO34 (ADC1_CH6)
-Cell 2 divider output (200k/100k)   → GPIO35 (ADC1_CH7)
-Pack total divider (330k/100k)      → GPIO32 (ADC1_CH4)
-NTC thermistor divider (10k/10k)    → GPIO33 (ADC1_CH5)
-BMS charge status GPIO              → GPIO27
-```
-
-### User Interface GPIO
-
-```
-Volume encoder CLK  → GPIO18 (interrupt)
-Volume encoder DT   → GPIO19
-Volume encoder SW   → GPIO5 (push = power toggle)
-Bass potentiometer  → GPIO36 (ADC1_CH0)
-Treble potentiometer→ GPIO39 (ADC1_CH3)
-Bluetooth button    → GPIO4 (interrupt, pairing)
-Preset button       → GPIO2 (placement comp toggle)
-WS2812B data        → GPIO13
-AUX detect switch   → GPIO14
-```
-
-### ADAU1701 Control Pins
-
-```
-Pin 10 SELFBOOT: 10kΩ → 3.3V → HIGH = self-boot from EEPROM on power-on
-Pin 24 XTALI: → 12.288MHz crystal + 22pF to GND
-Pin 25 XTALO: → 12.288MHz crystal + 22pF to GND
-MP12 (GPIO out): → RC delay → amp MUTE pin (pop prevention)
-MP13 (GPIO in): → Placement button (10kΩ pull-up to 3.3V)
-```
-
----
-
-## Power Architecture
-
-```
-3× Samsung/LG 18650 3000mAh (3S1P pack)
-  Nominal 11.1V | Full 12.6V | Cutoff 9.0V
-
-→ [3S BMS 20A]
-    Overcharge protection, over-discharge, overcurrent, cell balancing
-
-→ [USB-C PD module]
-    Charges to 12.6V CC/CV (correct 3S charging voltage)
-
-B+ distribution:
-  ├── TPA3116D2 woofer amp (direct 12V)  — 470µF + 100nF per VCC pin
-  ├── TPA3110D2 tweeter amp (direct 12V) — 470µF + 100nF per VCC pin
-  └── AMS1117-5V LDO
-           ├── AMS1117-3.3V → ESP32-WROVER + ADAU1701 DVDD + IOVDD
-           └── AMS1117-1.8V → ADAU1701 AVDD ONLY (dedicated, shared with NOTHING)
-
-ADAU1701 decoupling per power pin:
-  AVDD (Pins 1,2,3): 100nF + 10µF per pin
-  DVDD (Pins 5,6):   100nF + 10µF per pin
-  IOVDD (Pin 28):    100nF
-  VREF (Pin 27):     1µF to GND — reference only, zero load
-
-Power rules:
-  AVDD LDO: dedicated — never shared
-  AGND and DGND: star-join at ONE point near PSU entry only
-  Class-D switching traces: NEVER under analog signal traces
-  Bulk cap (470µF) at PCB 12V entry point
-  No copper pour under ESP32 antenna area
-```
-
-### Realistic Battery Runtime
-
-```
-Power at 50% volume:
-  Woofer amps (2× 8W average):  16W
-  Tweeter amps (2× 3W average):  6W
-  ESP32 + DSP + LEDs:            2W
-  Total: ~24W at 50% volume
-
-Battery usable capacity (80% depth of discharge):
-  3× 3000mAh at 11.1V = 99.9Wh × 80% = ~80Wh
-
-Runtime:
-  20% volume: ~20–25 hours
-  50% volume: ~3–4 hours  (lower than Marshall's 30hr — see note)
-  80% volume: ~1.5–2 hours
-
-Note: Marshall Middleton's 30hr claim likely uses a much larger pack
-(possibly 10,000mAh+ equivalent). Our 3S 3000mAh pack is small.
-
-If longer battery life needed:
-  Option A: Use 6× 18650 in 3S2P (doubles capacity, same voltage)
-  → Runtime: 40–50hr at 20%, 6–8hr at 50%
-  → Adds weight and enclosure volume
-```
-
----
-
-## Complete BOM v3.0
-
-### Core ICs
-
-| # | Part | Qty | Cost (Rs) | Status |
-|---|---|---|---|---|
-| 1 | ADAU1701JSTZ-RL LQFP-48 | 1 | Have | 0.5mm pitch, hot air required |
-| 2 | CY7C68013A FX2LP board | 1 | Have | freeUSBi USBi clone |
-| 3 | ESP32-WROVER-E | 1 | 500 | PSRAM mandatory |
-| 4 | 24LC256 EEPROM | 1 | 40 | DSP self-boot storage |
-| 5 | 12.288 MHz crystal oscillator | 1 | 100 | WAS MISSING — CRITICAL |
-| 6 | MAX17043 fuel gauge | 1 | 90 | Pack SOC percentage |
-| 7 | AMS1117-3.3 LDO | 2 | 40 | ESP32 + DSP DVDD |
-| 8 | AMS1117-1.8 LDO | 1 | 20 | DSP AVDD dedicated |
-| 9 | AMS1117-5.0 LDO | 1 | 20 | Pre-regulator |
-
-### Amplifiers
-
-| # | Part | Qty | Cost (Rs) | Notes |
-|---|---|---|---|---|
-| 10 | TPA3116D2 module | 1 | 200 | 2×30W, drives woofers |
-| 11 | TPA3110D2 module | 1 | 150 | 2×10W, drives tweeters |
-| 12 | 100Ω + 10nF input filter | 4 sets | 20 | DAC to amp per channel |
-| 13 | 8.2Ω + 100nF Zobel | 4 sets | 30 | Amp output per channel |
-| 14 | 10MΩ + 47µF pop delay RC | 1 | 10 | Amp mute delay |
-
-### Acoustic Drivers (T/S parameters mandatory before ordering)
-
-| # | Driver | Spec Required | Qty | Cost (Rs) |
-|---|---|---|---|---|
-| 15 | Woofer | 3", 4Ω, Fs below 120Hz, Qts 0.4–0.6, T/S published | 2 | 600 |
-| 16 | Tweeter | 3/4"–1" dome, 8Ω, Fs below 2kHz | 2 | 300 |
-| 17 | Passive Radiator | 3–4", adjustable Mmd (accepts added weights) | 2 | 800 |
-
-### Power System
-
-| # | Part | Qty | Cost (Rs) |
+| # | V3 said | V4 says | Severity if built as V3 |
 |---|---|---|---|
-| 18 | 18650 Li-ion 3000mAh Samsung/LG | 3 | 900 |
-| 19 | 3S BMS 20A | 1 | 150 |
-| 20 | USB-C PD charging module | 1 | 100 |
-| 21 | 470µF 25V electrolytic caps | 2 | 40 |
+| 1 | AVDD = 1.8 V, DVDD = 3.3 V | **AVDD = 3.3 V, DVDD = 1.8 V** | Chip destroyed instantly (DVDD abs max 2.2 V) |
+| 2 | ADAU1701 is I2S master, ESP32 slave | **ESP32 is I2S master, BCLK feeds MCLKI** | No audio — ESP32 slave mode FIFO-underruns |
+| 3 | Split AGND / DGND, star point | **One single ground plane** | Worse noise, not better |
+| 4 | Crystal mandatory | **Optional, on a jumper, bench use only** | Not fatal — but debugging becomes blind |
+| 5 | Pin numbers from the preliminary datasheet | **Every pin number corrected** | Miswired board |
+| 6 | Passive radiators, no high-pass | **Mandatory excursion-protecting HPF + limiter** | Cone bottoming below tuning |
 
-### Battery Monitoring
-
-| # | Part | Qty | Cost (Rs) |
-|---|---|---|---|
-| 22 | 100kΩ resistors | 6 | 10 |
-| 23 | 200kΩ and 330kΩ resistors | 2 each | 10 |
-| 24 | 100nF caps (ADC noise filter) | 4 | 10 |
-| 25 | 10kΩ NTC thermistor | 1 | 20 |
-
-### User Interface
-
-| # | Part | Qty | Cost (Rs) |
-|---|---|---|---|
-| 26 | EC11 rotary encoder (push switch) | 1 | 30 |
-| 27 | B10K rotary potentiometer | 2 | 40 |
-| 28 | Tactile push buttons | 3 | 15 |
-| 29 | WS2812B LED strip 10 LEDs | 1 | 80 |
-| 30 | 3.5mm panel mount AUX jack | 1 | 30 |
-| 31 | Panel mount USB-C connector | 1 | 50 |
-
-### PCB and Enclosure
-
-| # | Item | Cost (Rs) |
-|---|---|---|
-| 32 | Perfboard / veroboard for zero PCB testing | 150 |
-| 33 | Custom 2-layer PCB JLCPCB 5 pieces | 600–900 |
-| 34 | 12mm MDF for enclosure | 200 |
-| 35 | Speaker grille fabric | 150 |
-| 36 | Knob caps Marshall style | 100 |
-| 37 | Passive components misc | 300 |
-
-Total: approximately Rs 5,900 – 6,700
+Plus five things V3 never mentioned at all: **PVDD/PGND**, the **PLL loop filter**, **DAC Setup register 0x0827**, the **2 mA / 0.6 V GPIO limit**, and **MP pins floating HIGH at power-up**.
 
 ---
 
-## Enclosure Design
+## Corrected System Architecture
 
 ```
-External dimensions: 250 × 110 × 120mm (close to Middleton 230×98×110mm)
-Material: 12mm MDF all walls
-Internal acoustic volume: ~1.55L net per woofer (calculated from T/S)
+  Phone / PC / NAS
+        |
+        +-- Classic BT A2DP (LDAC / aptX HD / aptX / aptX-LL / AAC / SBC)
+        +-- WiFi: AirPlay (ALAC) / Squeezelite (FLAC) / DLNA      <- LOSSLESS
+        +-- BLE GATT  (app control, runs alongside any ONE audio source)
+        |
+   [ESP32-WROVER-IE-N16R8]  external IPEX antenna
+        |  I2S MASTER, FIXED 48 kHz, 24-bit  -- never 44.1 kHz
+        |  BCLK 3.072 MHz ---+--> ADAU1701 MP5   (INPUT_BCLK, pin 9)
+        |                    +--> ADAU1701 MCLKI (pin 32)   <- same wire, 64 x fs
+        |  LRCLK 48 kHz  -------> ADAU1701 MP4   (INPUT_LRCLK, pin 8)
+        |  DATA          -------> ADAU1701 MP0   (SDATA_IN0, pin 11)
+        |
+        +-- I2C --> ADAU1701 0x34, 24LC256 0x50, MAX17043 0x36, optional OLED
+        +-- SPI --> microSD (local FLAC/WAV)
+        +-- ADC1 -> cell voltages, pack total, NTC
+        |
+   [ADAU1701 SigmaDSP]   AVDD 3.3 V / DVDD 1.8 V (internal reg) / PVDD 3.3 V
+        |  DC-block, volume, HPF, BSC, PEQ, LR4 @ 4 kHz, trims, limiters
+        |
+        +-- VOUT0 (46) --> filter --> TPA3116D2 ch1 @ 20 dB --> Woofer L
+        +-- VOUT1 (45) --> filter --> TPA3116D2 ch2 @ 20 dB --> Woofer R
+        +-- VOUT2 (44) --> filter --> TPA3110D2 ch1 @ 20 dB --> Tweeter L
+        +-- VOUT3 (43) --> filter --> TPA3110D2 ch2 @ 20 dB --> Tweeter R
+        |
+        +-- ADC0 (2) / ADC1 (4) <-- 3.5 mm AUX jack (analog, lossless path)
 
-FRONT FACE:
-  [Tweeter L]  [Woofer L]              [Woofer R]
-  1" dome      3" woofer               3" woofer
-
-REAR FACE:
-  [Passive Radiator 1]               [Tweeter R]  ← REAR FACING
-  bass extension                      diagonal!
-
-LEFT END:
-  [Passive Radiator 2]
-
-TOP PANEL:
-  [Power+Volume] [Bass] [Treble] [BT] [Preset] [LED bar]
-
-REAR BOTTOM:
-  [USB-C charge] [AUX 3.5mm]
-
-KEY POINT: Tweeter L fires FORWARD. Tweeter R fires REARWARD.
-This diagonal physical arrangement creates True Stereophonic.
-No DSP widening algorithm needed — purely physical.
+   Programming: ESP32 running the TCPi bridge --> SigmaStudio over WiFi
+                (FX2LP + freeUSBi kept as backup only)
 ```
 
 ---
 
-## Development Roadmap
+## 1. Clock Architecture — The Decision That Unblocks Everything
 
-### Completed
+### Why V3's fix was a dead end
 
-- V1: Initial concept — component list
-- V2: Architecture, first gap analysis, I2S clock fix, crystal added
-- V3: Deep research — ESP32 memory, dual MCU decision, cell monitoring, acoustic layers, app design, zero PCB strategy
+V3 corrected V1 by making the ADAU1701 the I2S master and the ESP32 the slave. That removes the DSP's mute condition but creates a worse one:
 
-### In Progress
+- The ESP32's I2S block clocks its state machine from an **internal** clock. When that internal clock runs faster than an externally supplied MCLK, the FIFO underruns. Espressif's own position is that the codec must be the slave and the ESP32 the master.
+- Builders attempting exactly this topology report fragmented noise on the data line with APLL both on and off, and in several cases no data signal at all.
+- Clemens Valens, author of the Elektor Audio DSP FX Processor (ESP32-PICO + ADAU1701, Elektor 358): *"there is only one solution because the ESP32 software libraries do not (yet) support I²S slave mode. Therefore, the ESP32 must be the master."*
 
-- V4: Zero PCB testing stages 1–4 (single vs dual MCU decision)
-- V5: Firmware architecture based on testing results
+So both of these are true at once:
 
-### Not Started
+1. The ADAU1701 mutes every output if the serial-port clocks are not synchronous with its master clock.
+2. The ESP32 cannot be trusted as an I2S slave.
 
-- Source drivers with T/S parameters
-- Speaker Box Lite enclosure simulation
-- Custom PCB design in EasyEDA
-- PCB order and assembly
-- SigmaStudio DSP program (11 blocks)
-- EEPROM write and self-boot verification
-- Amplifier integration
-- Acoustic measurement with REW
-- Acoustic correction EQ from measurement
-- Marshall signature EQ tuning
-- Passive radiator mass iteration
-- App development (BLE GATT + UI)
-- A/B comparison vs real Marshall Middleton
+### The V4 solution — make BCLK *be* MCLK
+
+Setting **PLL_MODE0 = 0 and PLL_MODE1 = 0** puts the ADAU1701 in **64 × fs** mode, which is exactly the BCLK frequency for stereo I2S. One wire serves as both. An ADI applications engineer on EngineerZone: *"Connecting the 3.072 MHz clock to both BCLK and MCLK would be the best solution. In this configuration, please set the PLL to 64 × fs by setting PLL_MODE0 and PLL_MODE1 both to GND, and also take into account the increased amount of time required for PLL lock."*
+
+```
+ESP32 (I2S MASTER)
+  BCLK  3.072 MHz ---+---> ADAU1701 MP5   (INPUT_BCLK, pin 9)
+                     +---> ADAU1701 MCLKI (pin 32)
+  LRCLK 48 kHz    -------> ADAU1701 MP4   (INPUT_LRCLK, pin 8)
+  DATA            -------> ADAU1701 MP0   (SDATA_IN0, pin 11)
+
+PLL_MODE0 (pin 38) -> GND
+PLL_MODE1 (pin 39) -> GND
+
+MCLK and BCLK are the SAME signal, therefore synchronous by construction.
+The DSP never mutes, and the ESP32 never leaves master mode.
+```
+
+The MP10 → MP5 and MP11 → MP4 loopback traces specified in V3 are **deleted**.
+
+The same ADI engineer states the underlying rule: *"the MCLK and BCLK/LRCLK must be synchronous, but not necessarily phase aligned. If there are crossing edges between MCLK and BCLK, there will be some unpredictable audio artifact."*
+
+### The four rules that come with 64 × fs mode
+
+**1. Force 48 kHz everywhere. Never 44.1 kHz.**
+3.072 MHz is the *lowest* MCLKI in the datasheet's PLL table. A 44.1 kHz source makes BCLK 2.8224 MHz — about 8% below the nearest listed lock point. It is inside the PLL's nominal ±20% window and ADI expressed confidence it still works, but the safe design is to resample every source (BT, WiFi, SD) to a fixed 48 kHz so the DSP only ever sees 3.072 MHz.
+
+**2. The clock must never stop — including in AUX mode.**
+ADI: *"the I2S must always be present and it cannot stop even if you are only using the analog ADC input."* When the speaker is playing analog audio through the ADAU1701's own ADCs, the ESP32 must keep its I2S master clock running or the DSP mutes.
+
+**3. Budget 260 ms before audio is valid.**
+Rev. C: *"The PLL start-up time lasts for 2^18 cycles of the clock on the MCLKI pin. This time ranges from 10.7 ms for a 24.576 MHz (512 × fS) input clock to 85.3 ms for a 3.072 MHz (64 × fS) input clock."* 64 × fs is the slowest mode by a wide margin.
+
+```
+Hold ADAU1701 in RESET until the ESP32 I2S clock is confirmed running
+Release reset -> 85.3 ms PLL lock -> boot cycle -> ~260 ms total
+Keep the amps muted for at least 300 ms after reset to kill the boot pop
+Self-boot from EEPROM also waits for MCLK before it initialises
+```
+
+**4. Do not use GPIO0's APLL MCLK.**
+A widely-cited build log measured an ESP32's GPIO0 APLL-derived MCLK output jumping between roughly 7 MHz and 13 MHz. That is the failure mode this design sidesteps: BCLK is a cleanly divided clock, not an APLL output. This is a concrete advantage of BCLK-as-MCLK over the "separate MCLK on GPIO0" alternative.
+
+### Crystal: fit it, but understand what it is for
+
+The crystal is not required for normal operation, and it is **not a fallback for the live digital path**:
+
+```
+Crystal on MCLKI = 256 x fs, while the ESP32 is still the I2S master
+  -> MCLK and BCLK are now ASYNC
+  -> the DSP mutes the digital path
+
+So the crystal position is for:
+  - standalone bench bring-up (analog AUX in -> DSP -> DAC out)
+  - isolating "is the chip alive?" from "is the I2S config right?"
+It is NOT a runtime fallback for Bluetooth or I2S audio.
+```
+
+That isolation is worth ₹100 on a first build:
+
+```
+WITH crystal (jumper in XTAL position):
+  Power the DSP alone -> load a tone generator over TCPi -> scope VOUT0
+  Tone present? Chip alive, solder good, rails right, PLL locking.
+  THEN flip the jumper to the ESP32 clock and debug I2S as a separate problem.
+
+WITHOUT crystal:
+  Power up -> silence -> soldering? rails? I2S clock? PLL mode? program?
+  Five unknowns at once.
+```
+
+The Elektor board ships exactly this jumper — **JP1 pins 1&2 = crystal X1, pins 2&3 = ESP32 clock** — and its documentation says to short pins 2 & 3 whenever I2S is in use. Copy that.
+
+**Crystal spec matters:** 12.288 MHz, **AT-cut, parallel resonance, fundamental mode** (Rev. C: *"the oscillator circuit should be an AT-cut, parallel resonator operating at its fundamental frequency"*). A 24 MHz part is third-overtone and will not oscillate. Reference part: Abracon ABLS-12.288MHZ-B4-T. Circuit per Rev. C Figure 16: crystal between MCLKI (32) and OSCO (31), a **100 Ω** series damping resistor, **22 pF** to ground each side, traces as short as physically possible.
+
+### Rejected: 512 × fs / 24.576 MHz
+
+Faster lock (10.7 ms) and it would enable 96 kHz — but it requires the ESP32 to generate a stable 24.576 MHz, which reintroduces the GPIO0 APLL jitter problem, and it halves the instruction budget to 512. **Stay at 48 kHz / 64 × fs.**
 
 ---
 
-## References
+## 2. Power Rails — The Error That Would Have Killed the Chip
 
-| Resource | Link | Purpose |
+V3 specified AVDD = 1.8 V and DVDD = 3.3 V. **Rev. C Table 1 says the opposite**, and the Absolute Maximum Ratings list **DVDD to GND: 2.2 V max**. Building V3's power section would have put 3.3 V onto a 1.8 V pin and destroyed the part on first power-up.
+
+```
+CORRECT:
+  AVDD  (pins 36, 48)  = 3.3 V
+  IOVDD (pin 18)       = 3.3 V   <- verify this trace exists; a documented
+                                    build failed with bizarre GPIO behaviour
+                                    and no audio because it was missing
+  PVDD  (pin 34)       = 3.3 V   <- PLL supply, missing from V3 entirely
+  DVDD  (pins 13, 24)  = 1.8 V   <- from the chip's INTERNAL regulator
+  PGND  (pin 33)       = GND     <- missing from V3 entirely
+```
+
+### There is no 1.8 V LDO in the BOM any more
+
+The ADAU1701 has a built-in 1.8 V regulator. You only supply the pass transistor:
+
+```
+3.3 V --+-- PNP emitter (2N3906 or FZT953, hFE >= 100)
+        |
+      [1 kOhm]
+        |
+  VDRIVE (pin 17) --- PNP base
+
+  PNP collector --+--> DVDD (pins 13, 24)
+                  +--> 10 uF bulk (one, shared)
+                  +--> 100 nF at EACH DVDD pin
+
+Dissipation: (3.3 - 1.8) x 60 mA = 90 mW. A SOT-23 handles it.
+If the internal regulator is not used, VDRIVE must be tied to ground.
+```
+
+**Removed from BOM:** AMS1117-1.8. **Added:** 2N3906 ×2 (₹10), 1 kΩ.
+
+### PVDD is the cleanest rail on the board
+
+The PLL's VCO is referenced to PVDD. Any AC on that rail modulates the VCO, the PLL struggles to hold lock, MCLK jitters — and because BCLK is derived from MCLK, the jitter propagates into the audio clock.
+
+```
+Main 3.3 V --[ferrite bead]--+-- 10 uF --+-- 100 nF --+--> PVDD (34)
+                                                       |
+                                                      PGND (33)
+```
+
+### PLL loop filter — without it the PLL never locks
+
+Rev. C Figure 17, on PLL_LF (pin 35):
+
+```
+3.3 V (from AVDD) --[475 Ohm]--+--> PLL_LF (pin 35)
+                               |
+                            3.3 nF        56 nF --> GND
+
+Tolerances: 10% resistor, 20% caps. Not critical, but the parts must be there.
+```
+
+### Grounding — V3 had it backwards
+
+V3 specified split AGND / DGND copper zones joined at a star point. Rev. C says:
+
+> "A single ground plane should be used in the application layout."
+> "The AGND, DGND, and PGND pins can be tied directly together in a common ground plane."
+
+**Use one ground plane.** Separate analog and digital by *placement*, not by cutting copper. ADI designed the chip; follow ADI.
+
+### Reference decoupling
+
+```
+CM    (pin 40) -> 47 uF to GND    (reduces ADC/DAC crosstalk)
+FILTD (pin 41) -> 10 uF to GND
+FILTA (pin 47) -> 10 uF to GND
+100 nF at every single power pin, as close as the layout allows
+```
+
+---
+
+## 3. Complete Pin Map (ADAU1701, Rev. C verified)
+
+Every pin number in V3 came from the 2006 preliminary datasheet and was wrong. This table is from Rev. C and is authoritative. **Cross-check against the Rev. C pin-function table only — not timing tables, not the preliminary.**
+
+| Function | Pin | Notes |
 |---|---|---|
-| ADAU1701 Datasheet | analog.com | DSP chip reference |
-| SigmaStudio | analog.com | DSP graphical programming IDE |
-| WillyBilly06 LDAC | github.com/WillyBilly06/esp32-a2dp-sink-with-LDAC-APTX-AAC | LDAC on ESP32 |
-| WillyBilly06 v2 | github.com/WillyBilly06/ESP32-A2DP-SINK-WITH-CODECS-UPDATED | ESP-IDF 5.5 version |
-| MCUdude SigmaDSP | github.com/MCUdude/SigmaDSP | Arduino I2C DSP control |
-| freeUSBi | github.com/DatanoiseTV/freeUSBi | DIY USBi firmware |
-| pschatzmann A2DP | github.com/pschatzmann/ESP32-A2DP | Alternative A2DP library |
-| Speaker Box Lite | speakerboxlite.com | Enclosure and PR simulation |
-| WinISD | winisd.com | Advanced enclosure simulation |
-| REW | roomeqwizard.com | Acoustic measurement software |
-| ADI AN-1006 | Analog Devices | Crossover design in SigmaDSP |
-| ADI AN-1168 | Analog Devices | EQ filter design in SigmaDSP |
-| ADI EngineerZone | ez.analog.com | ADAU1701 community forum |
-| ESP-IDF RAM Guide | Espressif docs | ESP32 memory optimization |
-| Infineon AN-1135 | infineon.com | Class-D amplifier PCB layout |
+| ADC0 | 2 | Swapped vs preliminary — wiring from the old sheet reverses L/R |
+| ADC_RES | 3 | 18 kΩ to GND, 1% |
+| ADC1 | 4 | |
+| RESETB | 5 | Active low, to an ESP32 GPIO |
+| SELFBOOT | 6 | 10 kΩ to 3.3 V = boot from EEPROM |
+| ADDR0 | 7 | GND |
+| MP4 / INPUT_LRCLK | 8 | from ESP32 LRCLK |
+| MP5 / INPUT_BCLK | 9 | from ESP32 BCLK |
+| MP0 / SDATA_IN0 | 11 | from ESP32 DATA |
+| DGND | 12, 25 | |
+| DVDD | 13, 24 | **1.8 V**, 100 nF each |
+| MP10 / OUTPUT_LRCLK | 16 | unused in V4 |
+| VDRIVE | 17 | 1 kΩ to 3.3 V + PNP base |
+| IOVDD | 18 | 3.3 V — do not forget this trace |
+| MP11 / OUTPUT_BCLK | 19 | unused in V4 |
+| ADDR1 | 20 | GND |
+| WP | 21 | 10 kΩ to 3.3 V. **Low ENABLES writes** (preliminary said the opposite) |
+| SDA | 22 | 2.2 kΩ pull-up |
+| SCL | 23 | 2.2 kΩ pull-up |
+| RSVD | 30 | **Tie to GND.** Easy to miss, not optional |
+| OSCO | 31 | crystal + 100 Ω, 22 pF |
+| MCLKI | 32 | ESP32 BCLK (or crystal). MCLKI range 3–25 MHz |
+| PGND | 33 | |
+| PVDD | 34 | 3.3 V via ferrite |
+| PLL_LF | 35 | 475 Ω / 3.3 nF / 56 nF |
+| AVDD | 36, 48 | **3.3 V**, 100 nF + 10 µF each |
+| AGND | 1, 37, 42 | |
+| PLL_MODE0 | 38 | **GND** |
+| PLL_MODE1 | 39 | **GND** |
+| CM | 40 | 47 µF to GND |
+| FILTD | 41 | 10 µF to GND |
+| VOUT3 | 43 | Tweeter R |
+| VOUT2 | 44 | Tweeter L |
+| VOUT1 | 45 | Woofer R |
+| VOUT0 | 46 | Woofer L |
+| FILTA | 47 | 10 µF to GND |
+
+Other Rev. C facts that change the design:
+
+| Item | Value | V3 said |
+|---|---|---|
+| I2C pull-ups | **2.2 kΩ** | 4.7 kΩ |
+| I2C address | 0x34 (7-bit) / 0x68 write | correct |
+| EEPROM self-boot address | **0xA0 write / 0xA1 read** (7-bit 0x50) | 0x60 / 0x61 — self-boot would never work |
+| Program limit | **1019 usable** of 1024 (5 reserved for safeload) | 1024 |
+| Safeload registers | 0x0810–0x0819 (data + address), IST bit in 0x081C | not documented |
+| Operating temperature | **0 °C to 70 °C only** | never mentioned |
+| GPIO drive | **2 mA** | 5 mA |
+| Max delay memory | ~43 ms across all blocks | correct |
+| End-to-end dynamic range | 98.5 dB | ">100 dB" |
+
+**Known typo in Rev. C itself:** the Digital Timing table calls OUTPUT_BCLK "Pin 11". The pin function table is correct — MP11 / OUTPUT_BCLK is **pin 19**; pin 11 is MP0 / SDATA_IN.
+
+---
+
+## 4. Mandatory Initialization Sequence
+
+Rev. C adds a Control Registers Setup section and a **register that does not exist in the preliminary datasheet at all**. Skip this and the outputs stay muted — one of the most common first-boot failures on this chip.
+
+```
+1. Bring up 3.3 V. Confirm the ESP32 I2S clock is running.
+2. Release RESETB
+3. Wait for PLL lock  (85.3 ms in 64 x fs mode)
+4. Load the SigmaDSP program and parameters
+5. DSP Core Control, register 2076 (0x081C): set ADM, DAM, CR (bits 4:2) = 1
+6. DAC Setup, register 2087 (0x0827): set DS[1:0] = 01      <- NEW, mandatory
+7. Release the amp mute  (>= 300 ms after reset)
+```
+
+The SigmaDSP holds no non-volatile memory — the entire program must be loaded into RAM on every boot, from EEPROM self-boot or from the MCU.
+
+Also: the ADAU1701 **cannot be taken out of SPI mode without a full reset**. Once it latches SPI, only RESETB brings it back to I2C.
+
+---
+
+## 5. Analog Interfaces — Corrected Component Values
+
+### DAC output filter (Rev. C Figure 18) — ×4
+
+V3 specified 100 Ω + 10 nF. That is not ADI's filter.
+
+```
+VOUTn --[47 uF]--[560 Ohm]--+--> amp input
+                            |
+                          5.6 nF
+                            |
+                           GND        ~50 kHz corner
+
+Full scale: 0.9 Vrms (2.5 Vpp). Keep the output loaded >= 2 kOhm.
+The DACs are INVERTING -- invert in SigmaStudio or account for it.
+```
+
+### DAC to amplifier input
+
+Do not feed raw 0.9 Vrms into a module's input. A series R+C into the module forms a high-pass with its input impedance — target **20–30 Hz**. ADI's CN-0162 reference design (ADAU1701 → SSM2306) uses 0.10 µF + 13.0 kΩ for a 28 Hz corner; scale to whatever the chosen module's input impedance actually is. At 20 dB gain a TPA3116's input impedance is ~60 kΩ, so ~1.5 µF coupling caps are sufficient.
+
+### AUX input into the ADAU1701's own ADCs
+
+The chip has two 24-bit Σ-Δ ADCs that V3 never used. This is the wired lossless path and it costs about ₹20 in passives.
+
+```
+Jack L --[47 uF]--[7 kOhm 1%]--> ADC0 (pin 2)
+Jack R --[47 uF]--[7 kOhm 1%]--> ADC1 (pin 4)
+                  [18 kOhm 1%]--> ADC_RES (pin 3) --> GND
+```
+
+The ADC inputs are **current** inputs (100 µA rms full scale), which is why the series resistor sets the range. Rev. C Table 13:
+
+| Full-scale input | ADC_RES | ADC0/ADC1 series R |
+|---|---|---|
+| **0.9 Vrms** | 18 kΩ | **7 kΩ** — matches DAC full scale exactly |
+| 1.0 Vrms | 18 kΩ | 8 kΩ |
+| 2.0 Vrms | 18 kΩ | 18 kΩ |
+
+Use the 0.9 V row, 1% tolerance on all three. The ADCs have **no built-in high-pass**, so they show a DC offset — put a DC-blocking high-pass at the top of the DSP chain or you get pops.
+
+---
+
+## 6. Logic-Level Constraints
+
+Three separate limits, all easy to trip over:
+
+```
+1. GPIO drive is 2 mA (Rev. C, halved from the preliminary's 5 mA).
+   Rev. C explicitly warns against driving many LEDs directly from MPx pins.
+   Even one ordinary LED needs a transistor or logic-level MOSFET.
+
+2. The MP pins only pull down to about 0.6 V.
+   Downstream logic (MERUS/MA12070 amp enable among others) does not
+   reliably read 0.6 V as a valid low.
+   -> The amp MUTE/ENABLE line must go through a MOSFET (2N7002) or a
+      74LVC1G17 buffer. Never drive it directly.
+   -> Our TPA3116/TPA3110 audio inputs are analog, so the audio path
+      itself is unaffected.
+
+3. MP pins power up as INPUTS and float HIGH until the program loads
+   and reconfigures them.
+   -> 47 kOhm pull-down (or pull-up, for the wanted idle state) on any
+      MP pin that drives external logic.
+   -> Prefer active-high control wherever the external part allows it.
+```
+
+---
+
+## 7. Controller Decision — Single Original ESP32
+
+This was the open question V4 was supposed to answer. It is answered, and not by testing — by elimination.
+
+### The hard rule
+
+**Only the original ESP32 has Classic Bluetooth (BR/EDR).** S2, S3, C3, C6, H2 and P4 are BLE-only. A2DP — and therefore LDAC, aptX and AAC — requires BR/EDR. This single fact eliminated most of the field.
+
+### Everything evaluated and why it lost
+
+| Candidate | Verdict |
+|---|---|
+| ESP32-S3-WROOM-1 N16R8 | Better in every spec except the one that matters — no Classic BT, confirmed by Espressif. Excellent *control-plane* MCU if we ever go dual |
+| ESP32-C3 / C6 / H2 / S2 | BLE only |
+| Ai-Thinker PB-03 (PHY6252) | BLE 5.2 only. Good, cheap secondary MCU (₹180) — nothing more |
+| nRF52820 | BLE only, 32 KB RAM, no I2S, comparator instead of ADC, bare QFN, needs a J-Link |
+| Bouffalo BL618 / AiPi-SCP-2.4 | BLE only in practice; Classic BT is in the marketing, not in the SDK |
+| CSR8675 (BTM875 / PA214) | Native certified LDAC + I2S out, genuinely good — but locked firmware, no I2C control, no BLE, no WiFi, no SD. Needs an ESP32 next to it anyway |
+| QCC3034 / QCC5125 boards | No LDAC (Qualcomm never licenses it). "Lossless decoding" in the listings is false |
+| CSR8645 | BT 4.0, no LDAC, I2S output effectively unobtainable with stock firmware |
+| ZK-TB21 / MT21 / ST21 | Duplicates the whole project — built-in BT + tone controls + 2.1 topology. Useful only as a borrowed bench amp |
+| Raspberry Pi Zero 2 W | Everything works natively via PipeWire, including LDAC and AirPlay. Killed by ~20 s boot and ~8 h battery — both fatal for a portable. Worth having on the bench as a fallback tool |
+| TAS5805M / TAS5825M | Better *architecture* — but no safeload equivalent, see below |
+| ESP32-S31 | The dream chip. Announced, not shipping: 0 distributor stock, 21-week lead. RISC-V, so the LDAC firmware would need porting. Its Classic BT (+EDR) is claimed in the announcement but **not confirmed in the distributor parametric data** — verify against the datasheet before counting on it |
+
+### Why the TAS5825M was rejected despite being the better chip
+
+It removes about 30 components, needs no MCLK, keeps the signal digital all the way to the speaker terminals, and protects driver excursion in hardware. But its DSP is programmed by pasting a PPC3-generated **whole-register blob** into firmware. TI's own engineer recommends against hand-writing individual settings. There is no clean live-parameter path.
+
+```
+ADAU1701 safeload: drag a slider in the app
+  -> BLE -> ESP32 -> 5 coefficients over I2C -> new sound in <50 ms, no pop
+
+TAS5825M: drag a slider
+  -> open PPC3 on a Windows PC -> regenerate blob -> recompile -> reflash
+```
+
+This project is not "a speaker". It is "a speaker I can retune from my phone." Safeload is the hardware feature that makes that possible. **The TAS5825M is the right chip for a V2 custom PCB; the ADAU1701 is the right chip for this one.**
+
+### Final module choice
+
+```
+FINAL:      ESP32-WROVER-IE-N16R8
+            16 MB flash, 8 MB PSRAM, IPEX/U.FL external antenna, ECO V3 silicon
+
+PROTOTYPE:  7Semi ESP32-DevKitC WROVER (16 MB / 8 MB / IPEX)
+            USB, CP2102N, BOOT/EN buttons, 2.54 mm headers, breadboardable
+
+RIGHT NOW:  any ESP32 already on the bench is fine for Stages 1-6.
+            PSRAM is only needed once LDAC decoding starts.
+
+NEVER:      any WROOM (no PSRAM), any R2 variant (EOL, 2 MB),
+            any S3/C3/C6 (no Classic Bluetooth)
+```
+
+**Why the external antenna is not optional polish:** the module sits inside a sealed MDF box with four neodymium driver magnets, metal PR frames, cells, and Class-D amps switching at 400 kHz. A PCB antenna in that environment will drop WiFi audio. Route a U.FL pigtail to a rear-panel SMA antenna (₹140 total), away from magnets and switching nodes.
+
+**PSRAM reality check:** the ESP32 can only map 4 MB of external RAM into its address space; the upper 4 MB of an R8 module needs the `himem` API. Internal DRAM is the scarce resource, not PSRAM — Classic BT alone takes ~100 KB. Rough live-stack budget: **BLE ~50 KB, Classic BT ~100 KB, WiFi ~70 KB — do not hold all three.** Use the PSRAM branch of the A2DP firmware so audio buffers live in PSRAM.
+
+**Buying warning for India:** insist on the full part number printed on the shield — `ESP32-WROVER-IE-N16R8`. Boards sold as "4 MB" have been found containing 2 MB flash, which produces cryptic partition errors.
+
+### Radio coexistence — the V3 "must test" item, resolved
+
+| Combination | Works | Notes |
+|---|---|---|
+| A2DP + BLE GATT | Yes | Set `ESP_BT_MODE_BTDM`. This is the app-control case |
+| WiFi + BLE GATT | Yes | Time-sliced, well tested |
+| WiFi audio + BLE GATT | Yes | No Classic BT involved |
+| **A2DP + WiFi** | **No — do not design for it** | Espressif: *"BR/EDR and WIFI coexistence performance is in optimizing on ESP32."* Users report massive WiFi packet loss and disassociation during A2DP |
+| A2DP + WiFi audio | Irrelevant | Two audio sources at once — never happens |
+
+Every scenario this speaker actually enters is supported, because **source selection is mutually exclusive by design**: Bluetooth **or** WiFi **or** microSD **or** AUX, with BLE control alongside whichever is active.
+
+Coexistence tuning that helps where it is needed: pin the BT and WiFi controllers to different cores (`CONFIG_BTDM_CTRL_PINNED_TO_CORE_CHOICE`, `CONFIG_ESP_WIFI_TASK_CORE_ID`), enable software coexistence, set Core Debug Level to None, and enlarge the I2S DMA buffer to ride out RF gaps.
+
+If Stage 9 testing does show A2DP + BLE stuttering, the fix is a PB-03 on UART (₹180) as a dedicated BLE radio. **Do not design for it up front** — leave four spare pads for a UART header.
+
+---
+
+## 8. Source Architecture — Lossless Added
+
+No Bluetooth codec is lossless, LDAC included (990 kbps vs 1411 kbps for CD). If lossless matters, it has to arrive by another path — and the WROVER already has the hardware for three of them.
+
+| Rank | Path | Rate | Lossless | Extra hardware |
+|---|---|---|---|---|
+| 1 | microSD FLAC/WAV | 1411 kbps | Yes | microSD module ₹80 + card |
+| 2 | WiFi AirPlay (ALAC) / Squeezelite (FLAC) / DLNA | 1411 kbps | Yes | none |
+| 3 | AUX 3.5 mm into the ADAU1701 ADCs | analog | Yes* | ~₹20 passives |
+| 4 | Bluetooth LDAC | 990 kbps | No | none |
+| 5 | Bluetooth SBC | 328 kbps | No | none |
+
+\* no digital compression; quality depends on the source device's DAC.
+
+**microSD playback is both the best quality and the longest runtime** — the radio is off entirely.
+
+### The firmware fork in the road
+
+The two candidate stacks **cannot be merged into one binary**:
+
+- **WillyBilly06 `ESP32-A2DP-SINK-WITH-CODECS-UPDATED`** — ESP-IDF 5.5.2, patched Bluetooth stack, LDAC / aptX HD / aptX / aptX-LL / Opus / AAC / SBC, LDAC to 96 kHz/24-bit. Has a PSRAM branch (WROVER) and an internal-SRAM branch (WROOM). Bundles BLE GATT, DSP, level meters and WS2812B effects — closest to this project's feature set. Needs modifying to force fixed 48 kHz I2S master output. *(The older `esp32-a2dp-sink-with-LDAC-APTX-AAC` repo is superseded — its own README points here.)*
+- **sle118/squeezelite-esp32** — AirPlay, Squeezelite/LMS, Spotify Connect, BT sink, multi-room, display and encoder support. But it *is* the firmware, with one active mode at a time, and its own foreword warns that everything other than LMS playback is "stitched on".
+
+**V5 must pick one as the primary stack.** Current lean: WillyBilly06 for Bluetooth-first with SD playback added via `schreibfaul1/ESP32-audioI2S`, which conveniently **always outputs 48 kHz regardless of source** — exactly what a fixed-rate ADAU1701 needs. AirPlay would then be the feature deferred, or handled by a later firmware swap. (`rbouteiller/airplay-esp32` is a newer AirPlay-2 option but is oriented at the TAS5825M.)
+
+Practical file-format note: 16/44.1 FLAC decodes comfortably on the ESP32; 24/96 is at the edge and stutters. Target 16–24 bit, 44.1–48 kHz files.
+
+---
+
+## 9. Amplifiers
+
+### Power reality at 12 V
+
+The "50 W" on a TPA3116D2 module assumes 21–24 V. At 12 V into 4 Ω the real figure is **~17 W/ch at usable THD** (~22 Vpp swing); TI's own 25 W number is at 14.4 V and 10% THD. Into 8 Ω at 12 V it is nearer 10 W, and TI state you must push past 1% THD to get there. That is still fine — the drivers are Xmax-limited long before the amps clip.
+
+### The gain setting matters more than the chip
+
+```
+ADAU1701 DAC full scale: 0.9 Vrms -- a strong signal.
+Stock TPA3116 modules ship at 32-36 dB gain (loudest sells best).
+
+At 36 dB (x63):  0.9 Vrms x 63 = 56 Vrms demanded
+                 a 12 V rail delivers about 4 Vrms
+                 -> you use the bottom 7% of the volume range
+                 -> and you amplify the noise floor by 63x
+
+At 20 dB (x10):  0.9 Vrms x 10 = 9 Vrms
+                 -> matched to the rail
+                 -> 16 dB less amplified hiss
+                 -> TI's own low-noise reference point:
+                    65 uV (-80 dBV) A-weighted, SNR 102 dB
+```
+
+**Set every amp board to 20 dB gain.** On common boards that is two SMD resistors next to the chip: many are 36 dB via 75 kΩ ("753") + 47 kΩ, and removing the 75 kΩ parts gives 20 dB master mode. TI's clean 20 dB is a single 5.6 kΩ gain resistor with the second removed. **Identify the actual gain resistors on your specific board against the TI datasheet before removing anything** — clone designators differ (R1/R2 vs R2/R3).
+
+### Module surgery checklist
+
+1. Gain to 20 dB. All modules as master, identical resistors.
+2. Bypass or remove the onboard volume pot — the DSP does volume digitally. If it must stay, fit ~4.7 kΩ across the pot output; builders report the hiss becoming "barely noticeable".
+3. Replace the input coupling caps with matched film caps (~1.5 µF at 20 dB) — matched L/R values also reduce turn-on pop.
+4. Feed the module through our own series R+C (~20–30 Hz corner), not raw DAC output.
+5. Add Zobel networks on the outputs (8.2 Ω + 100 nF per channel) — cheap modules omit them.
+6. Check the output inductors: 10–22 µH shielded. Tiny unshielded coils — or missing inductors entirely — are the classic shortcut.
+7. One thick ground wire from module GND to the board's star point. Multiple ground paths are where hum comes from.
+8. 1000–2200 µF low-ESR bulk at each amp's VCC — this is what supplies the 4 A bass transients, not the battery.
+
+### Chips considered
+
+| Amp | @12 V, 4 Ω | Idle | India stock | Verdict |
+|---|---|---|---|---|
+| TPA3116D2 | ~17 W | ~40 mA | Modules easy, chips via LCSC | **Woofers** |
+| TPA3110D2 | ~10 W (8 Ω) | ~30 mA | Easy | **Tweeters** |
+| TPA3156D2 | ~15 W | <23 mA | Hard | Best on paper — adaptive modulation, programmable power limit (kills battery sag), master/slave sync, fault reporting. Unavailable locally |
+| MA12070 (MERUS) | ~14 W | 52 mW | Hard | Best noise floor, used by decaVox. QFN 6×6, hard to source and solder, and the 0.6 V logic-low issue originates here |
+| TPA3255 | ~15 W | high | Easy | Needs 24 V+, pointless here |
+| PAM8610 / PAM8403 | ~10 W | high | Easy | Too noisy, no gain control |
+
+TPA3110D2 / TPA3118D2 / TPA3116D2 / TPA3156D2 **share the HTSSOP-32 footprint** — design the PCB once and populate whatever is available.
+
+### The amp is not the bottleneck
+
+```
+TPA3116D2 THD:            0.03 - 0.1%
+PC83-4 driver THD @ 85dB:    1 - 3%
+```
+
+The driver distorts 10–100× more than the amplifier. The correct response is not a better amp — it is to **measure acoustically, with a microphone in front of the speaker**, and build the correction EQ from that measurement. One measurement covers the DSP, the amp's output LC filter interacting with the driver's non-flat impedance, the driver, the box and the baffle. Frequency-domain errors from *any* source get corrected together. Only noise floor, distortion and clipping cannot be fixed this way.
+
+---
+
+## 10. Drivers — Locked
+
+```
+WOOFERS:   2x Dayton Audio PC83-4     3", 4 ohm
+TWEETERS:  2x Dayton Audio ND16FA-4   5/8" soft dome, 4 ohm
+CROSSOVER: LR4 @ 4.0 kHz
+TWEETER TRIM: -6 dB
+Both from diyaudiocart.com -- one order, matched impedance
+```
+
+> The research report predates the tweeter decision and specifies the HiVi T20-8 at
+> −2.2 dB trim. The ND16FA-4 replaced it afterwards; its 93 dB sensitivity is why the
+> trim is now −6 dB. Everything else in the report's crossover section still applies.
+
+### Dayton PC83-4 (woofer)
+
+| Parameter | Value |
+|---|---|
+| Fs | 80.1 Hz |
+| Qts | 0.54 |
+| Vas | 1.98 L |
+| Xmax | **2.0 mm** — the binding constraint |
+| Sd | 30.2 cm² |
+| Vd | **6.0 cm³** |
+| Mms | 2.7 g |
+| Sensitivity | 86.8 dB @ 2.83 V/1 m |
+| Power | 30 W RMS |
+| Response | 80 Hz – 20 kHz |
+| Cone | Poly damped woven glass fibre, copper cap |
+| Parts Express boxes | sealed 1.4 L → F3 126 Hz / vented 2.83 L → F3 62 Hz |
+
+### Dayton ND16FA-4 (tweeter) — switched from HiVi T20-8
+
+| | ND16FA-4 | HiVi T20-8 |
+|---|---|---|
+| Impedance | **4 Ω — matches the woofer** | 8 Ω |
+| Sensitivity | **93 dB** | 89 dB |
+| Power RMS | 30 W | 15 W |
+| Fs | 2246 Hz | 2000 Hz |
+| Faceplate | 45 mm | 50 mm |
+| Depth | 11.4 mm | 12.7 mm |
+| Ferrofluid | Yes | Yes |
+
+The 4 Ω match means both amp channels see identical loads, and the amp delivers ~17 W into 4 Ω versus ~10 W into 8 Ω at 12 V. The tweeter being 6.2 dB hotter than the woofer is headroom in reserve — the right direction to be wrong in.
+
+### Drivers rejected, and why
+
+| Driver | Reason |
+|---|---|
+| Dayton ND64-4 | Sealed F3 **283 Hz**. Not a bass driver. Sd 15.6 cm², and ₹2,615 |
+| Dayton ND65-4 | 83 dB sensitivity (−3.8 dB), 15 W, ~2× the price. Matching ND65-PR is its only real advantage |
+| Dayton ND90-4 | Needs 4.5 L per driver — the budget is ~2.8 L — and rolls off at 15 kHz |
+| Dayton PC105-8 | Needs 4.25 L sealed, 126 mm frame on a 110 mm baffle, 8 Ω halves amp power, ₹4,800 the pair |
+| Dayton PC83-8 | Same cone, 8 Ω: about 3 dB total loss and a 1.8× bigger box |
+| Generic Amazon "3 inch hi-fi tweeter" | 35 mm voice coil (a midrange, not a tweeter), contradictory impedance, no T/S data, 75 mm body |
+| Inkocean 48 mm square | Car-audio square faceplate, zero published data, ₹1,749 |
+| Unnamed 3.6 Ω silk dome | Fs 1.5 kHz and 30 kHz extension are excellent, but 3.6 Ω trips the TPA3110's thermal protection, and 92 dB needs a −5 dB trim |
+
+**Rule applied throughout: if the seller does not publish T/S parameters, the driver does not enter the design.**
+
+---
+
+## 11. Enclosure — Open Decision, Deliberately
+
+This is the one place where the research report and the current plan disagree, so both are recorded.
+
+### The report's position: sealed
+
+> The 2 mm Xmax is decisive. A passive radiator unloads the driver near tuning, letting
+> excursion spike below tuning. A sealed box rolls off at 12 dB/oct and inherently limits
+> low-frequency excursion. Use ~1.5–2.5 L per driver (Qtc ~0.7–0.8) and extend the bottom
+> electronically. And since a ~70–80 Hz woofer HPF is mandatory anyway, tuning a PR below
+> that corner yields limited benefit.
+
+### The counter-argument: an octave is a lot to give up
+
+```
+PC83-4 sealed 1.4 L  -> F3 = 126 Hz   <- loses the kick drum fundamental
+                                         and a bass guitar's low E (41 Hz)
+PC83-4 vented 2.83 L -> F3 =  62 Hz
+```
+
+And the excursion risk is asymmetric: **at** the tuning frequency the radiator does the air-moving and cone excursion actually *drops*. The danger is only **below** tuning — which is exactly what the high-pass filter removes, for about 20 instructions. For reference, the Marshall Middleton reaches a claimed 50 Hz from roughly 1.8 L using small PRs plus DSP correction.
+
+### The decision: build so both can be tested
+
+```
+Box:        ~2.8 L per driver  (~5.5 L total internal)
+PR tuning:  ~60 Hz, tuned by adding washers until the impedance
+            minimum sits at 60 Hz
+PR spec:    must displace >= 12 cm3 (2x the woofer's 6.0 cm3),
+            3-4", generous Xmax, adjustable mass
+            (Dayton makes no PR matched to the PC83 -- DMA series,
+             ND90-PR, or generic adjustable-mass)
+DSP:        high-pass 70-80 Hz, 2nd-4th order, on the woofer path
+            -- NON-NEGOTIABLE in either alignment
+Build:      mount the passive radiators on a REMOVABLE panel
+```
+
+- **Test A** — PR installed, HPF at ~70 Hz. Measure and listen.
+- **Test B** — PR aperture closed with a blank plate: now a 2.8 L sealed box. Measure and listen.
+
+A 2.8 L sealed box is oversized for the PC83-4 so F3 rises slightly, but it works — the fallback is genuinely usable. Cost of keeping the option open: one blank panel. **Model any PR in WinISD with the actual PR's parameters before buying** — the numbers above are starting estimates.
+
+### Other enclosure rules
+
+- Line the walls with 10–20 mm acoustic foam or polyester; light fill for a sealed box (it adds apparent volume); never over-stuff near a PR.
+- Flush-mount both drivers.
+- Chamfer or round the baffle edges — even a 3–5 mm radius measurably cuts diffraction on a narrow baffle.
+- Keep the tweeter close to the woofer to limit lobing around the 4 kHz crossover.
+- Brace, and seal every joint. A sealed alignment demands a genuinely airtight box.
+
+### Honest expectation
+
+Two Xmax-limited 86.8 dB / 30 W three-inch drivers give lively near- and mid-field levels, not outdoor-party SPL. The DSP loudness and limiter are what make it sound *good* rather than merely loud.
+
+---
+
+## 12. Power System — Corrected Maths
+
+V3 stated that a 3S 3000 mAh pack holds "99.9 Wh". That is wrong, and the error mattered: **series cells add voltage, not capacity.**
+
+```
+3S 3000 mAh:   3.0 Ah x 11.1 V = 33.3 Wh   (not 99.9 Wh)
+4S 2600 mAh:   2.6 Ah x 14.8 V = 38.5 Wh
+4S2P 5200 mAh: 5.2 Ah x 14.8 V = 77 Wh
+```
+
+Realistic runtime, not the 20 hours V3 claimed:
+
+| Listening level | Draw | 3S 3000 mAh | 4S2P 5200 mAh |
+|---|---|---|---|
+| Quiet background | ~5 W | ~5.3 h | ~12 h |
+| Normal | ~8 W | ~3.3 h | ~7.7 h |
+| Loud | ~20 W | ~1.3 h | ~3 h |
+| Mixed real use | — | ~3 h | **~5–6 h** |
+
+### Go 4S
+
+```
+Amp power at 4 ohm:
+  12.0 V (3S)        ~17 W per channel, sagging badly toward cutoff
+  14.8 V (4S nom)    ~22 W per channel
+  16.8 V (4S full)   ~28 W per channel
+
++2.5 dB output, and it stays there instead of getting quieter
+as the pack drains. TPA3116 handles up to 26 V.
+
+TARGET PACK: 4S2P, 5200 mAh or better, 14.8 V, BMS included,
+             16.8 V charge, ~12 V cutoff.
+AVOID:       4S1P anything -- one evening of listening, no more.
+```
+
+Watch for mislabelled listings: a "4S1P 26000 mAh" pack is physically impossible (4S1P capacity equals one cell, and the largest 18650 is ~3500 mAh). It is a typo for 2600 mAh.
+
+### Current budget
+
+| Load | Power | Current @ 14.8 V |
+|---|---|---|
+| Idle (everything on, no music) | ~4 W | 0.27 A |
+| Quiet (~70 dB) | ~8 W | 0.54 A |
+| Normal (~80 dB) | ~15 W | 1.0 A |
+| Loud (~90 dB) | ~30 W | 2.0 A |
+| Bass transients | ~60 W | 4.0 A |
+
+Baseline electronics (ESP32 + DSP + LEDs + amp idle) total about 0.22 A — music dominates completely.
+
+```
+BMS:      20 A
+Fuse:     5 A slow-blow inline from battery +
+Charger:  16.8 V @ 2 A  -> ~3 h for a 5200 mAh pack
+Wiring:   18 AWG battery main, 20-22 AWG signal
+Bulk:     1000-2200 uF at each amp VCC -- these supply the 4 A peaks
+```
+
+**Correction to V3's monitoring plan:** the MAX17043 is a **single-cell** fuel gauge. Use it on one representative cell or on a scaled measurement, and get balance/health from the per-cell resistor dividers into ADC1. The V3 divider ratios were sized for 3S and must be re-scaled for a 4S pack. Enforce a hard low-voltage cutoff in firmware regardless of what the BMS does.
+
+---
+
+## 13. Expected Output
+
+```
+Watch the units. Both drivers are quoted at 2.83 V, which into 4 ohms
+is 2 W -- not 1 W. Subtract 3 dB before doing any power maths:
+
+  PC83-4    86.8 dB @ 2.83 V/1 m  ->  83.8 dB/W
+  ND16FA-4  93.0 dB @ 2.83 V/1 m  ->  90.0 dB/W
+
+Woofers:   83.8 dB/W, ~12 W each after the limiter
+           -> 94.6 dB each, ~98 dB for the pair
+Tweeters:  90.0 dB/W, ~5 W each
+           -> 97.0 dB each, ~100 dB for the pair (headroom to spare)
+
+Bass is excursion-limited, not power-limited:
+  Vd = 30.2 cm2 x 2 mm = 6.0 cm3 per driver, 12.1 cm3 for the pair
+
+  200 Hz  ~105 dB
+  150 Hz  ~100 dB
+  100 Hz   ~94 dB
+   80 Hz   ~90 dB
+   65 Hz   ~86 dB
+```
+
+| | Max SPL @ 1 m | Low end |
+|---|---|---|
+| **This build** | ~95–100 dB | ~65–70 Hz |
+| Marshall Middleton | 87 dB | 50 Hz |
+| JBL Flip 6 | ~85 dB | 63 Hz |
+| Genelec 8010A | 96 dB | 74 Hz |
+
+Louder than the Middleton; the Middleton goes deeper on bigger radiators and more cone area. On paper the amps total ~50 W; real usable output is ~34 W, and the DSP limiter engages before the amps ever run out.
+
+### Can it be made louder?
+
+| Change | Gain | Cost | Worth it |
+|---|---|---|---|
+| 4S battery (14.8 V) | +2.5 dB | ₹300 | Yes, but it only helps mids/highs — bass is still Xmax-bound |
+| 4 woofers instead of 2 | +6 dB and double the displacement | ~₹1,500 + bigger box + third amp | The only real fix for bass |
+| Bigger driver | +3–4 dB | ₹2,000 + a much bigger box | Not portable any more |
+| Bigger amp (TPA3255) | ~0 dB | ₹1,000 | Pointless — the driver is the ceiling |
+
+100 dB at 1 m is uncomfortable to sit next to. Build it at ~50 W, listen, then decide.
+
+---
+
+## 14. Goal — Settled
+
+A studio-monitor target was evaluated and **rejected**, because it is the opposite of a Marshall-flavoured target:
+
+```
+MARSHALL                           STUDIO / AUDIOPHILE
+coloured, characterful       vs     flat, neutral
++4 dB bass, +2.5 dB presence vs     +/-2.5 dB max deviation
+fun, forgiving               vs     revealing, unforgiving
+tuned by ear                 vs     tuned by measurement
+```
+
+Chasing flat would have meant a calibrated UMIK-1 (~₹8,000), a full REW protocol, 3D-printed tweeter waveguides, 18 mm braced walls, an external PCM5102A/ES9038 DAC, and probably an ADAU1452 (80-bit ALU, ASRC) instead of the ADAU1701 (56-bit ALU, 1019 instructions, ~90 dB DAC THD).
+
+**The goal is a speaker with good bass, clear mids and smooth highs.** What is kept is the short list that actually determines the result:
+
+1. Correct enclosure volume from the T/S data
+2. A tested alignment (PR at ~60 Hz, or sealed)
+3. LR4 crossover at 4.0 kHz
+4. Tweeter trimmed −6 dB, polarity verified
+5. Limiter set conservatively for the 2 mm Xmax
+6. Airtight box
+7. Foam damping inside
+
+A free phone RTA app (Spectroid / AudioTool) is enough to catch gross peaks. The full REW protocol in `docs/README_v3.md` stays available for anyone who wants to go further later.
+
+---
+
+## 15. DSP Program — V4 Signal Chain
+
+```
+I2S IN (48 kHz, 24-bit, ESP32 master)   /   or AUX via ADC0/ADC1
+  |
+  [1]  DC-block high-pass                    the ADCs have none -- prevents pops
+  [2]  Input volume                          live via I2C safeload
+  [3]  Dynamic loudness                      low-shelf + gentle high-shelf,
+                                             scaled inversely with volume,
+                                             cornered ABOVE the woofer HPF
+  [4]  Woofer high-pass 70-80 Hz, 2nd-4th    MANDATORY -- protects 2 mm Xmax
+  [5]  Baffle step correction  +3 to +4 dB low-shelf at ~1.0-1.2 kHz
+                                             (115 / 0.11 m baffle; +6 dB is the
+                                             theoretical max -- keep it a preset)
+  [6]  PEQ voicing, ~4 bands per channel:
+         80 Hz   shelf  +3.0 dB    body and punch
+         250 Hz  peak   -2.0 dB    removes boxiness
+         2.5 kHz peak   +1.5 dB    vocal clarity
+         10 kHz  shelf  +2.0 dB    air
+         (acoustic correction filters added here after measurement)
+  [7]  Crossover LR4 @ 4.0 kHz               = two cascaded 2nd-order
+                                             Butterworth biquads (Q 0.707)
+                                             per band, or SigmaStudio's
+                                             2-way crossover block
+  [8]  Tweeter trim -6.0 dB + polarity check invert the woofer if the
+                                             summation shows a null
+  [9]  Tweeter time-alignment delay          from step response, 0-0.3 ms
+  [10] Woofer limiter:  threshold -6 to -3 dBFS, ratio >=10:1,
+                        attack 1-5 ms, release 100-300 ms
+       Tweeter limiter: lower threshold, protects against clipping bursts
+  [11] Output mute control                   released >= 300 ms after reset
+  |
+  VOUT0/1 -> woofers (TPA3116D2)    VOUT2/3 -> tweeters (TPA3110D2)
+```
+
+### Instruction budget
+
+| Block | Instructions |
+|---|---|
+| Input DC-block + volume | ~10–20 |
+| LR4 crossover (16 biquads) | ~80–120 |
+| Woofer HPF (4 biquads) | ~20–30 |
+| PEQ voicing (8 bands) | ~40–60 |
+| Baffle-step shelf ×2 | ~15 |
+| Tweeter trim + polarity | ~5 |
+| Woofer + tweeter limiters | ~60–120 |
+| Dynamic loudness | ~30–60 |
+| **Total** | **~300–500 of 1024** |
+
+Rule of thumb: a double-precision biquad is 5–7 instructions, single-precision 3–4. **Use single precision only on benign filters** — never on very low-frequency, high-Q filters, where the reduced resolution adds audible noise.
+
+**Check `[project]/IC1_[name]/net_list_out2/compiler_output.txt` after every compile.** It prints e.g. `Number of instructions used (out of a possible 1024) = 458`. Going over the limit produces no clear error — the DSP just goes silent after Link/Compile/Download. Trust the compiler output over any estimate in this document. 96 kHz would halve the budget to 512 and is not an option: **48 kHz only.**
+
+### Live control
+
+Use **safeload for every runtime change** — volume, EQ, crossover, limiter thresholds. Values are 5.23 fixed-point; write the safeload data/address registers (0x0810–0x0819), then set the IST bit in 0x081C. MCUdude's library wraps all of it.
+
+---
+
+## 16. Programming Path — WiFi, Not USB
+
+**rarranzb/ADAU1701-TCPi-ESP32** turns an ESP32 into a TCPi bridge on port 8086, so SigmaStudio connects to the DSP over WiFi (SigmaStudio: USBi → TCP/IP → 8086) with **hardware safeload** — no pops during live parameter changes — and can write the program to EEPROM from its web UI.
+
+```
+Repo default wiring           Our wiring
+  SCL      -> GPIO 17           must be remapped  <- GPIO16/17 are PSRAM on
+  SDA      -> GPIO 16           must be remapped     WROVER and CANNOT be used
+  RESET    -> GPIO 21           see the pin map in section 18
+  SELFBOOT -> GPIO 19
+  Reconfigure at http://<esp-ip>/config
+```
+
+Caveats: older TCPi variants were **write-only with no readback**, and the tooling can need a recent or beta SigmaStudio build. Verify readback early if you intend to rely on it, keep SigmaStudio current, and back up project files — SigmaStudio projects are version-sensitive.
+
+This makes the **FX2LP + freeUSBi programmer optional** — keep it as a backup for initial bring-up only.
+
+Do **both** boot paths: EEPROM self-boot as primary (works even if the ESP32 crashes), with the ESP32 verifying the DSP is running and re-pushing the program if not.
+
+After the first SigmaStudio compile, run **MCUdude's `DSP_parameter_generator`** — SigmaStudio scatters parameter macros across several header files; the script merges them into one usable file.
+
+---
+
+## 17. Reference Repositories
+
+| Repo | What it gives us |
+|---|---|
+| `rarranzb/ADAU1701-TCPi-ESP32` | SigmaStudio over WiFi with hardware safeload — replaces the FX2LP |
+| `Thenicolaibulow/decaVox` | Full KiCad 6 PCB: ADAU1701 + ESP32-WROVER + 4× MA12070P. Closest existing project — study its power sequencing, reset and clocking before drawing ours |
+| `ClemensAtElektor/Elektor_AudioDSP` | ESP32-PICO + ADAU1701, the JP1 clock-source jumper, the exact clocking topology we use. Arduino IDE 1.8.19 / ESP32 core 2.0.17 |
+| `freedsp.github.io` | Open ADAU1701 hardware, I2C and I2S getting-started guides, hand-soldering video for the QFP package |
+| `MCUdude/SigmaDSP` | Arduino I2C library, safeload wrapper, DSP_parameter_generator |
+| `Wei1234c/SigmaDSP` | Python control from PC or ESP32 — bench tool, not the shipping path |
+| `WillyBilly06/ESP32-A2DP-SINK-WITH-CODECS-UPDATED` | **Current** LDAC / aptX HD / aptX / aptX-LL / Opus / AAC / SBC sink, ESP-IDF 5.5.2, PSRAM branch + BLE GATT + LED effects |
+| `WillyBilly06/esp32-a2dp-sink-with-LDAC-APTX-AAC` | Superseded — its README points to the repo above |
+| `sle118/squeezelite-esp32` | AirPlay, Squeezelite/LMS, Spotify Connect, multi-room, display, encoder |
+| `schreibfaul1/ESP32-audioI2S` | SD/web FLAC, WAV, MP3 — always outputs 48 kHz |
+| `pschatzmann/ESP32-A2DP` | Simplest reliable A2DP sink (SBC/AAC/aptX), good fallback |
+| `rbouteiller/airplay-esp32` | AirPlay 2 on ESP32 — oriented at TAS5825M, worth watching |
+
+---
+
+## 18. ESP32 Pin Map
+
+Baseline from the research report. **Reconcile against the chosen firmware's hard-coded defaults before wiring** — squeezelite-esp32 and WillyBilly06's sink both have opinions, and the TCPi bridge defaults to the unusable GPIO16/17.
+
+```
+UNUSABLE:  GPIO 6-11  (SPI flash)
+           GPIO 16,17 (PSRAM on WROVER modules)
+           GPIO 1,3   (USB serial)
+STRAPPING: GPIO 0, 2, 5, 12, 15 -- handle with care at boot
+ADC:       ADC2 does not work while WiFi is active. Use ADC1 only.
+           GPIO 34-39 are input-only and have NO internal pull-ups.
+
+I2S to ADAU1701 (ESP32 = master):
+  GPIO 26 -> BCLK    (also wired to ADAU1701 MCLKI pin 32)
+  GPIO 25 -> LRCLK / WS
+  GPIO 22 -> DOUT
+
+I2C to ADAU1701 + EEPROM + fuel gauge + optional OLED:
+  GPIO 21 -> SDA      2.2 kOhm pull-up
+  GPIO 4  -> SCL      2.2 kOhm pull-up
+
+ADAU1701 RESET:
+  GPIO 23
+
+microSD (SPI):
+  GPIO 13 MOSI | GPIO 27 MISO | GPIO 14 SCK | GPIO 5 CS (strapping: HIGH at boot)
+
+Battery / NTC sense (ADC1):
+  GPIO 32 | GPIO 33 | GPIO 34 | GPIO 35     (34/35 input-only, ideal for sense)
+
+Rotary encoder:
+  GPIO 36 (VP) A | GPIO 39 (VN) B | GPIO 18 switch
+  36/39 need EXTERNAL pull-ups
+
+Buttons:
+  GPIO 19, GPIO 2 (strapping -- must not be held at boot), one spare
+
+WS2812B data:
+  GPIO 12 (strapping, must be LOW at boot -- WS2812 idles low, but verify)
+
+Amp mute / enable:
+  a spare GPIO through a buffer transistor (never direct)
+```
+
+---
+
+## 19. Zero-PCB Build Plan
+
+```
+Stage 0  SigmaStudio only, no hardware
+         Build the full chain, compile, check the instruction count,
+         Export System Files -> param_data.h
+
+Stage 1  Power rails ONLY on perfboard. DSP not connected.
+         Multimeter: 3.30 V +/-0.1 and 1.80 V +/-0.05
+         AVDD = 3.3 V, DVDD = 1.8 V. A wrong rail kills the chip silently.
+
+Stage 2  ADAU1701 on the TQFP->DIP adapter.
+         Crystal, decoupling, PLL loop filter, EEPROM, RSVD to GND, IOVDD.
+         Continuity-test all 48 pins to their DIP holes.
+         Bring the DSP up STANDALONE first: crystal clock, analog AUX in,
+         DAC out. Confirm 0x0827 = 01 and the core register un-muted.
+         This isolates DSP problems from ESP32 problems.
+
+Stage 3  ESP32 running the TCPi bridge, I2C pins remapped off GPIO16/17.
+         >>> MILESTONE: SigmaStudio connects to the chip over WiFi <<<
+         Reach this and the riskiest part of the project is behind you.
+
+Stage 4  Sine generator -> VOUT0. Scope it, or listen through any small amp.
+
+Stage 5  Write the program to EEPROM. Power-cycle with the ESP32 detached.
+         Still generating a tone? Self-boot works.
+
+Stage 6  Flip the jumper to the ESP32 clock. Scope for a steady 3.072 MHz.
+         Hold reset until the clock is up; mute the amps ~300 ms.
+         Confirm the DSP does not mute. This proves PLL_MODE 0/0.
+
+Stage 7  Amps: set 20 dB gain, rework inputs, then drivers.
+         Listen for hiss with no signal.
+Stage 8  Sources one at a time: AUX, microSD, Bluetooth, WiFi.
+Stage 9  BLE GATT alongside audio -- the single/dual MCU decision point.
+```
+
+Stages 1–5 need no amplifier and no speakers at all.
+
+### Benchmarks that change the plan
+
+| Symptom | Response |
+|---|---|
+| PLL won't lock reliably in 64 × fs on perfboard (intermittent mute, unstable 3.072 MHz on the scope) | Fall back to the crystal for bench work, shorten and clean the clock wiring, move the clock section to a small PCB |
+| `compiler_output.txt` nears ~900 instructions | Switch benign filters to single precision, or cut PEQ bands |
+| BT audio stutters with BLE active | Enlarge the PSRAM audio buffer, reduce BLE advertising/connection frequency, confirm core pinning. Only then consider the PB-03 |
+| Bass distorts / cone bottoms | Tighten the woofer HPF and lower the limiter threshold. The 2 mm Xmax is the hard limit |
+
+---
+
+## 20. Phase 1 BOM (DSP only)
+
+Everything needed to reach Stage 6. Speakers, amps, battery and enclosure are deliberately excluded.
+
+### AliExpress — order first, 15–20 day lead
+
+| Item | Qty | ₹ |
+|---|---|---|
+| TQFP48 → DIP adapter, **0.5 mm pitch, 7×7 mm body** | 3 | 200 |
+| No-clean flux paste (syringe) | 1 | 150 |
+
+The dual-sided "TQFP32/44/64/80/100 → DIP" adapters sold by Robu/Sharvi work — one side is 0.5 mm. Sellers contradict each other on which side is labelled A or B; ignore the labels and use the side with the finer pads (12 pads per edge = 48).
+
+### Evelta / Robu
+
+| Item | Qty | ₹ |
+|---|---|---|
+| ADAU1701JSTZ-RL | 1–2 | 350–700 |
+| 24LC256 EEPROM | 2 | 80 |
+| 12.288 MHz crystal — AT-cut, fundamental, parallel | 2 | 100 |
+| 2N3906 PNP (or FZT953) | 2 | 10 |
+| AMS1117-3.3 module | 2 | 60 |
+
+### Passives
+
+| Value | Purpose | Qty |
+|---|---|---|
+| 100 Ω | crystal damping | 5 |
+| 475 Ω | PLL loop filter | 5 |
+| 560 Ω | DAC output filter ×4 | 5 |
+| 1 kΩ | internal regulator base | 5 |
+| 2.2 kΩ | I2C pull-ups | 5 |
+| 5.6 kΩ | TPA3116 gain set to 20 dB (later) | 5 |
+| 7 kΩ 1% | ADC input | 5 |
+| 10 kΩ | SELFBOOT, WP pull-ups | 10 |
+| 18 kΩ 1% | ADC_RES | 5 |
+| 47 kΩ | MP pin pull-downs | 10 |
+| 100 nF | every power pin (8 needed) | 20 |
+| 22 pF | crystal load | 4 |
+| 3.3 nF / 56 nF | PLL loop filter | 5 each |
+| 5.6 nF | DAC output filter | 5 |
+| 10 µF | FILTA, FILTD, bulk | 10 |
+| 47 µF | CM pin, DAC coupling, ADC coupling | 10 |
+
+≈ ₹300
+
+### Build supplies
+
+| Item | ₹ |
+|---|---|
+| Perfboard ×3, headers, jumper wires | 250 |
+| 0.5 mm solder + 1.5 mm desoldering braid | 210 |
+| 99% isopropyl alcohol | 60 |
+| 12 V 2 A bench adapter | 250 |
+| Multimeter (mandatory, if not already owned) | 500 |
+
+### Total
+
+```
+Without multimeter:  ~ Rs 1,760 - 2,360
+With multimeter:     ~ Rs 2,260 - 2,860
+
+A second ADAU1701 is Rs 350. It is worth it -- the fear of
+destroying the only chip is what makes people rush 0.5 mm soldering.
+```
+
+### Not yet
+
+Tweeters, woofers, amp modules, microSD module, ESP32-WROVER-IE, battery, BMS, charger, passive radiators, enclosure materials, encoders, buttons, WS2812B, jacks. Roughly ₹5,500 more, all of it after Stage 6 proves the DSP chain works.
+
+An ESP32 already on the bench is fine for Stages 1–6 — check the shield: WROVER has PSRAM, WROOM does not, and PSRAM is only needed once LDAC decoding starts.
+
+---
+
+## 21. Soldering the LQFP-48
+
+The single highest-risk manual operation in the project. Budget a full hour, good light, no rush.
+
+```
+ 1. Clean the adapter pads with IPA, let dry
+ 2. Tin ONE corner pad, lightly
+ 3. Place the chip. Check the pin-1 dot against the adapter marking. Twice.
+ 4. Reflow that corner while nudging into alignment. Every pin centred
+    on its own pad -- the 0.5 mm footprint is universal (32-100 pins),
+    so a 48-pin chip sits on the inner portion of the pad ring
+ 5. Tack the opposite corner. The chip can no longer move
+ 6. Flood one side with flux, generously
+ 7. Drag-solder that side in one slow continuous motion
+ 8. Bridges will happen: more flux, braid over the bridge, press, lift
+ 9. Repeat all four sides
+10. Clean with IPA and a soft brush
+11. Inspect every pin under magnification (phone camera zoom works)
+12. Continuity-test all 48 pins to their DIP holes, and check for
+    shorts to neighbours -- especially the power and PLL pins
+
+Iron: 300-320 C, fine conical or <=1 mm chisel tip.
+Practice on a scrap QFP first -- that is what the third adapter is for.
+```
+
+---
+
+## 22. Deferred to V2
+
+| Idea | Status |
+|---|---|
+| TAS5825M / TAS5805M smart amp | Right architecture for a custom PCB — JLCPCB reflows the QFN, ~30 fewer parts, no MCLK, hardware excursion protection. Blocked today by VQFN (unsolderable by hand) and the lack of a safeload equivalent |
+| ESP32-S31 | Classic BT + BLE 5.4 + WiFi 6 + dual I2S with hardware BT audio sync on one chip. 0 stock, 21-week lead, RISC-V port needed for the LDAC firmware, and its +EDR support needs confirming in the datasheet. Set a distributor stock alert |
+| Voice assistant / smart-home hub | Wake word needs an ESP32-S3 (microWakeWord is S3-only) **and** acoustic echo cancellation — Home Assistant's own Voice PE pairs an S3 with a dedicated XMOS XU316 DSP just for AEC. Two MCUs and a hard DSP problem on top of this build is how projects die |
+| Home Assistant integration | **Free today, firmware only:** media_player entity, MQTT control from the rotary encoder, ESP-NOW to other projects, Matter over WiFi, TTS announcements. No microphone, no wake word, no AEC |
+| External DAC (PCM5102A / ES9038Q2M) | Takes DAC THD from ~−90 dB to ~−110 dB. Route the ADAU1701 I2S output to a header on the PCB even if unpopulated. Needs a 74LVC1G17 buffer because of the 0.6 V logic low |
+| ADAU1452 | 80-bit ALU, ~295 MIPS, 32-bit coefficients, built-in ASRC — which would eliminate every clock problem in §1. For a genuine studio-monitor build |
+| 4 woofers | The only real fix for the bass ceiling: +6 dB and double the displacement |
+
+---
+
+## 23. Still Open for V5
+
+1. **Primary firmware stack** — WillyBilly06's codec sink (Bluetooth-first, LDAC) or squeezelite-esp32 (WiFi-first, AirPlay). They cannot be merged. Current lean: WillyBilly06 + ESP32-audioI2S for SD, AirPlay deferred.
+2. **Source-switching state machine** — WiFi and Classic BT share one radio, so the firmware must cleanly tear one down before starting the other, while keeping the I2S clock running the whole time (including AUX mode).
+3. **Single vs dual MCU** — decided provisionally as single, confirmed at Stage 9 by streaming A2DP while pushing continuous BLE GATT writes. Fallback: PB-03 on UART, four spare pads reserved.
+4. **Enclosure alignment** — PR at ~60 Hz vs sealed. Build for both, decide by measurement.
+5. **Passive radiator mass** — cannot be calculated to a final value. Model in WinISD with the real PR's parameters, buy after the drivers are measured, then iterate with washers.
+6. **BLE GATT map** — the 25-characteristic design in `docs/README_v3.md` stands, but needs the new parameters folded in (HPF corner, alignment mode, source select, limiter thresholds).
+7. **4S divider ratios** — the cell-monitoring dividers in V3 were sized for 3S and must be re-scaled; the MAX17043 is single-cell only.
+
+---
+
+## 24. Confidence and Caveats
+
+Recorded so future-me knows which claims are verified and which are inferred. Full list in `docs/pre-build-research-report.md` §9.
+
+- The ADI "best solution" clock endorsement is a **design recommendation**, not a published measured build with jitter data. The strongest empirical proof is the shipping Elektor board using the same ESP32-master topology — but its article does not spell out whether JP1 routes BCLK or a separate MCLK, nor the exact PLL mode. **Verify on the bench that the DSP does not mute.**
+- The 44.1 kHz → 2.8224 MHz case is ~8% below the nearest listed PLL point. Inside the ±20% window, ADI is confident, but force 48 kHz so it never arises.
+- Instruction-count estimates are approximate. **Trust `compiler_output.txt`.**
+- TPA3116 noise and power behaviour varies board to board, and gain-resistor designators differ between clones. Identify the real resistors against the TI datasheet before removing anything.
+- Passive-radiator numbers are starting estimates and need WinISD modelling with the actual PR's parameters.
+- Pin-map suggestions must be reconciled with each firmware's hard-coded defaults and the WROVER-IE datasheet.
+- GPIO drive and the "0.6 V low" behaviour differ between datasheet revisions. **Rev. C governs this build.**
+
+---
+
+## 25. References
+
+| Resource | Purpose |
+|---|---|
+| ADAU1701 Datasheet **Rev. C** (analog.com) | The only datasheet to work from. Figure 12 System Block Diagram, Figure 16 crystal, Figure 17 PLL filter, Figure 18 DAC filter, Table 12 PLL modes, Table 13 ADC resistors |
+| ADI EngineerZone | PLL_MODE / MCLK guidance, BCLK jitter, PVDD, MP pin float-high |
+| ADI AN-1006 / AN-1168 / CN-0162 | Crossover design, EQ design, DSP-to-amp interface |
+| Elektor issue 358 (Nov/Dec 2024) | Audio DSP FX Processor — the shipping ESP32 + ADAU1701 board with the JP1 clock jumper |
+| SigmaStudio (analog.com) | Free, Windows. Works with no hardware attached |
+| Espressif ESP-IDF docs | I2S, PSRAM/himem, coexistence, strapping pins |
+| WinISD / speakerboxlite.com | Enclosure and passive radiator simulation |
+| REW (roomeqwizard.com) | Acoustic measurement, if pursued later |
+| Infineon AN-1135 | Class-D amplifier PCB layout |
+| `docs/pre-build-research-report.md` | Primary source for V4, with quotes and caveats |
+| `docs/README_v3.md` | V1–V3 history, app/BLE design, cell monitoring, REW protocol |
 
 ---
 
 ## Author
 
-Ghost 
+Ghost
 
-"Marshall-level sound from raw chips. Not because it is easy — because it is the right way to build it."
+*Marshall-level sound from raw chips. Not because it is easy — because it is the right way to build it.*
 
-Last updated: May 2026 — V3 design and deep research complete. Zero PCB testing phase upcoming.
+**V4 — architecture locked against Rev. C and the pre-build research report. Phase 1 parts on order. Hardware next.**
